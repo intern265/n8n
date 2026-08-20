@@ -120,17 +120,58 @@ failed remove.
 3. **Tag audit workflow** — walk the audience and report any member carrying two
    values from the same group. Good weekly canary that this stays fixed.
 
-## Verification
+## Testing
 
-Run the tag logic against the fixtures before deploying:
+Three layers, in the order you should run them.
+
+### 1. Offline — no Mailchimp involved
 
 ```
-node scripts/test_build_tag_ops.js
+node scripts/test_build_tag_ops.js     # tag logic against 7 input scenarios
+node scripts/validate_workflow.js      # wiring, branch indices, node ops, expressions
+node scripts/simulate_tag_sync.js      # replays old vs new against a fake audience
 ```
 
-Then in n8n: execute `mailchimp tags update` with the pinned data (one member,
-`Active`, `Tier C`, `VIC`, `Regional`, `Furniture`, plus the unmanaged
-`Independent` tag). Expect one remove call carrying 15 tags — including
-`Inactive` — followed by one add call, and `Independent` untouched. Confirm in
-Mailchimp that the member ends up with exactly one activity, tier, geo, state and
-business-type tag.
+`simulate_tag_sync.js` implements the real endpoint semantics (`status: active`
+adds, `status: inactive` removes, removing an absent tag is a no-op), seeds a
+dummy audience in the corrupted state, and runs **both** the old add-only
+workflow and the patched one over identical input. The old version must fail —
+a test that passes on the broken code proves nothing.
+
+Current result: old workflow leaves 4 of 5 members with conflicting tags; patched
+workflow leaves 0, preserves `VIP` / `Trade Show 2025` / `Abandoned Cart`, and
+drops the call count from 27 to 11. 12/12 assertions pass.
+
+### 2. In n8n, without touching Mailchimp
+
+Import the workflow, then **disable both Mailchimp nodes** and execute with the
+pinned data. Inspect the `Build Tag Ops` output: one item per email carrying
+`tagsToAdd`, `tagsToRemove`, `hasRemovals` and `conflicts`. Nothing is written to
+Mailchimp, so this is a zero-risk first look.
+
+Note: the `tags` field on both Mailchimp nodes is bound to an expression that
+returns an **array** (`={{ $json.tagsToRemove }}`). n8n resolves this correctly at
+runtime, but the editor renders multi-value fields as a list — do not "tidy" that
+field in the UI, or the binding is lost.
+
+### 3. Against one real test member
+
+1. Pick a disposable contact (`productteam@cdsi.com.au` is already a test
+   account in the pinned data).
+2. In Mailchimp, deliberately break it: add **both** `Active` and `Inactive`, and
+   both `Tier B` and `Tier C`. Add a `VIP` tag as a canary.
+3. Re-enable the Mailchimp nodes, pin that one member's tags, execute.
+4. Check the two node executions: the remove call should carry ~15 tag names with
+   `status: inactive`, the add call ~5 with `status: active`.
+5. In Mailchimp, confirm the member now has exactly one activity, tier, geo, state
+   and business-type tag — and that `VIP` is still there.
+6. Run the parent `Mailchimp sync` with pinned data for the same member to confirm
+   the sub-workflow call still returns cleanly.
+
+Only then let the weekly schedule run.
+
+## Verification checklist for the backfill
+
+When you force the one-off backfill (edge case 1), set `isSyncing: true` on both
+Mailchimp nodes first, run against a small slice before all ~3,700, and revert the
+flag afterwards.
