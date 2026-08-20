@@ -1,0 +1,346 @@
+{
+  "name": "mailchimp tags update",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// BUILD TAG OPS — mutually exclusive tag enforcement\n// ------------------------------------------------------------\n// Accepts either input shape (mixed is fine):\n//   { email, tags: [\"VIC\",\"Metro\",\"Active\", ...] }   <- preferred\n//   { email, tagName: \"Active\" }                     <- legacy, one item per tag\n//\n// Emits ONE item per email:\n//   { email, tagsToAdd, tagsToRemove, hasRemovals, conflicts }\n//\n// RULE: only values listed in GROUPS / RETIRED are ever removed.\n// Any other tag on the member (Abandoned Cart, Shopify, Fieldfolio,\n// VIP, manual campaign tags...) is never touched.\n// ============================================================\n\n// Mutually exclusive groups. Order = precedence when a record somehow\n// arrives with two values from the same group (first one wins).\nconst GROUPS = {\n  activity: ['Active', 'Inactive'],\n  spendTier: ['Tier A', 'Tier B', 'Tier C'],\n  geo: ['Metro', 'Regional'],\n  state: ['NSW', 'VIC', 'QLD', 'SA', 'WA', 'TAS', 'ACT', 'NT'],\n  businessType: ['Gift & Homewares', 'Furniture', 'Manchester', 'Interior Stylist', 'Other'],\n};\n\n// Old / renamed / misspelt values that may still be sitting on members in\n// Mailchimp. Add anything you find under Audience > Tags that is a stale\n// variant of a group value (e.g. 'Tier-A', 'Gift and Homewares'). These are\n// removed but never added.\nconst RETIRED = {\n  activity: [],\n  spendTier: [],\n  geo: [],\n  state: [],\n  businessType: [],\n};\n\nconst EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n\n// canonical lookup so 'tier a' / 'Tier  A' both resolve to 'Tier A'\nconst canonical = new Map();\nfor (const [group, values] of Object.entries(GROUPS)) {\n  for (const v of values) canonical.set(v.toLowerCase(), v);\n  for (const v of RETIRED[group] || []) canonical.set(v.toLowerCase(), v);\n}\n\nconst clean = (t) => String(t == null ? '' : t).replace(/\\s+/g, ' ').trim();\nconst normalize = (t) => {\n  const c = clean(t);\n  return canonical.get(c.toLowerCase()) || c;\n};\n\n// ---- 1. collapse incoming items into one tag set per email ----\nconst byEmail = new Map();\n\nfor (const item of $input.all()) {\n  const d = item.json || {};\n  const email = String(d.email == null ? '' : d.email).toLowerCase().trim();\n  if (!email || !EMAIL_RE.test(email)) continue;\n\n  const raw = Array.isArray(d.tags) ? d.tags : (d.tagName ? [d.tagName] : []);\n  if (!byEmail.has(email)) byEmail.set(email, new Set());\n  const set = byEmail.get(email);\n  for (const t of raw) {\n    const n = normalize(t);\n    if (n) set.add(n);\n  }\n}\n\n// ---- 2. per email, work out adds and removes ----\nconst out = [];\n\nfor (const [email, tagSet] of byEmail) {\n  const conflicts = [];\n  const remove = new Set();\n  const losers = new Set();\n\n  for (const [group, values] of Object.entries(GROUPS)) {\n    const present = values.filter((v) => tagSet.has(v));\n    if (present.length === 0) continue; // this run says nothing about this group -> leave it alone\n\n    const winner = present[0];\n    if (present.length > 1) {\n      conflicts.push({ group, received: present, kept: winner });\n      for (const v of present.slice(1)) losers.add(v);\n    }\n\n    for (const v of values.concat(RETIRED[group] || [])) {\n      if (v !== winner) remove.add(v);\n    }\n  }\n\n  const tagsToAdd = [...tagSet].filter((t) => !losers.has(t));\n  const tagsToRemove = [...remove].filter((t) => !tagsToAdd.includes(t));\n\n  // never fire a remove-only call: without a replacement tag we would be\n  // stripping segmentation off a member for no reason\n  if (tagsToAdd.length === 0) continue;\n\n  out.push({\n    json: {\n      email,\n      tagsToAdd,\n      tagsToRemove,\n      hasRemovals: tagsToRemove.length > 0,\n      conflicts,\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        416
+      ],
+      "id": "1a6b1c30-6d7a-4c1e-9f21-0d1a2b3c4d5e",
+      "name": "Build Tag Ops"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        704,
+        416
+      ],
+      "id": "92e16b11-324d-42c4-a8d6-068bc48f1331",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7c6d1f2a-3b44-4c55-8d66-9e0f1a2b3c4d",
+              "leftValue": "={{ $json.hasRemovals }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        928,
+        416
+      ],
+      "id": "3f2e1d0c-9b8a-4756-b4c3-2d1e0f9a8b7c",
+      "name": "Has Stale Tags?"
+    },
+    {
+      "parameters": {
+        "resource": "memberTag",
+        "operation": "delete",
+        "list": "0d435a9df3",
+        "email": "={{ $json.email }}",
+        "tags": "={{ $json.tagsToRemove }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        320
+      ],
+      "id": "5d4c3b2a-1908-4e7f-a6b5-c4d3e2f1a098",
+      "name": "Remove Stale Tags",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "mailchimpApi": {
+          "id": "fwuYrbbxnMVpdwa7",
+          "name": "J-Elliot-marketing"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "memberTag",
+        "list": "0d435a9df3",
+        "email": "={{ $('Loop Over Items').first(1).json.email }}",
+        "tags": "={{ $('Loop Over Items').first(1).json.tagsToAdd }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [
+        1408,
+        416
+      ],
+      "id": "ec328a57-31ac-4a20-a0fb-b03933be75fc",
+      "name": "Add Current Tags",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "mailchimpApi": {
+          "id": "fwuYrbbxnMVpdwa7",
+          "name": "J-Elliot-marketing"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs once the loop is done. Returns one row per member describing what\n// this run asked Mailchimp to do, so the caller (and the execution log) can\n// see removals and any upstream tag conflicts.\nreturn $('Build Tag Ops').all().map(item => ({\n  json: {\n    email: item.json.email,\n    tagsAdded: item.json.tagsToAdd,\n    tagsRemoved: item.json.tagsToRemove,\n    conflicts: item.json.conflicts,\n    tagSyncCompletedAt: new Date().toISOString(),\n  },\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        928,
+        608
+      ],
+      "id": "8e7d6c5b-4a39-4281-b70f-6e5d4c3b2a19",
+      "name": "Return Tag Sync Summary"
+    },
+    {
+      "parameters": {
+        "sendTo": "tanay@zerobusy.com",
+        "subject": "=[ERROR] {{ $json.workflow.name }} failed — {{ $now.format('dd-m-yyyy') }}",
+        "emailType": "text",
+        "message": "={{ $json.workflow.name }} failed \\nLast node Executed: {{ $json.execution.lastNodeExecuted }}\\nExecution: {{ $json.execution.url }}\\n",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        496,
+        192
+      ],
+      "id": "9da9d2f9-b43f-4539-afdc-1a24e29b820f",
+      "name": "Send a message",
+      "webhookId": "f592034f-b66b-4d95-9cc7-43b8debcb72e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ATslW0x5iOr4fkg1",
+          "name": "j-elliot-draft-orders"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        272,
+        192
+      ],
+      "id": "2801b86c-a9ae-43f1-9d94-78fd6024eab5",
+      "name": "Error Trigger"
+    }
+  ],
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "json": {
+          "email": "pakenham@mrfurniture.com.au",
+          "tagName": "VIC"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      },
+      {
+        "json": {
+          "email": "pakenham@mrfurniture.com.au",
+          "tagName": "Regional"
+        },
+        "pairedItem": {
+          "item": 1
+        }
+      },
+      {
+        "json": {
+          "email": "pakenham@mrfurniture.com.au",
+          "tagName": "Independent"
+        },
+        "pairedItem": {
+          "item": 2
+        }
+      },
+      {
+        "json": {
+          "email": "pakenham@mrfurniture.com.au",
+          "tagName": "Furniture"
+        },
+        "pairedItem": {
+          "item": 3
+        }
+      },
+      {
+        "json": {
+          "email": "pakenham@mrfurniture.com.au",
+          "tagName": "Active"
+        },
+        "pairedItem": {
+          "item": 4
+        }
+      },
+      {
+        "json": {
+          "email": "pakenham@mrfurniture.com.au",
+          "tagName": "Tier C"
+        },
+        "pairedItem": {
+          "item": 5
+        }
+      }
+    ]
+  },
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Build Tag Ops",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Tag Ops": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Return Tag Sync Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Has Stale Tags?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Stale Tags?": {
+      "main": [
+        [
+          {
+            "node": "Remove Stale Tags",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add Current Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove Stale Tags": {
+      "main": [
+        [
+          {
+            "node": "Add Current Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Current Tags": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "4f4fa53d-3edd-4d7f-8186-5c941fecc072",
+  "meta": {
+    "instanceId": "8a799f928ce276f57341b8cb2463485c1da4f533435604fce67c56880814909c"
+  },
+  "nodeGroups": [],
+  "id": "m8Q7MdDVuhUrLqj2",
+  "tags": []
+}
