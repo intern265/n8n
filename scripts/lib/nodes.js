@@ -43,4 +43,9 @@ function run(nodeName, inputItems, nodeData = {}) {
   return fn($input, makeProxy(nodeData)).map((i) => i.json);
 }
 
-module.exports = { workflow, run, wrap };
+// same, but keeps the n8n item wrapper — for nodes whose output is fed onward
+function runRaw(nodeName, inputItems, nodeData = {}) {
+  return run(nodeName, inputItems, nodeData).map((json) => ({ json }));
+}
+
+module.exports = { workflow, run, runRaw, wrap };

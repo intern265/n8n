@@ -10,7 +10,7 @@
       "name": "When Executed by Another Workflow",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "position": [
-        -160,
+        -380,
         416
       ]
     },
@@ -21,7 +21,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        60,
+        -160,
         416
       ],
       "id": "1a6b1c30-6d7a-4c1e-9f21-0d1a2b3c4d5e",
@@ -35,7 +35,7 @@
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "position": [
-        280,
+        60,
         416
       ],
       "id": "92e16b11-324d-42c4-a8d6-068bc48f1331",
@@ -54,14 +54,13 @@
       "type": "n8n-nodes-base.mailchimp",
       "typeVersion": 1,
       "position": [
-        520,
+        300,
         512
       ],
       "id": "0b1c2d3e-4f50-4617-8829-a0b1c2d3e4f5",
       "name": "Fetch Current Tags",
       "retryOnFail": true,
       "waitBetweenTries": 5000,
-      "alwaysOutputData": true,
       "credentials": {
         "mailchimpApi": {
           "id": "fwuYrbbxnMVpdwa7",
@@ -72,12 +71,12 @@
     },
     {
       "parameters": {
-        "jsCode": "// ============================================================\n// DIFF TAGS — decide what to remove and what to add\n// ------------------------------------------------------------\n//   current tags   <- fetched from Mailchimp by the previous node\n//   desired tags   <- from the segmentation payload (master sheet)\n//\n//   tags to remove = current  MINUS  desired   (managed values only)\n//   tags to add    = desired  MINUS  current\n//\n// SCOPE RULE: a tag is only ever removed if it belongs to a group this\n// run actually has an opinion about. An abandoned-cart run that only\n// supplies [\"Abandoned Cart\",\"Shopify\"] has no opinion on activity or\n// tier, so it removes nothing. Anything outside the managed vocabulary\n// (VIP, campaign tags, Shopify, Fieldfolio...) is never removed.\n// ============================================================\n\n// ---- GUARD: every Mailchimp node must talk to the same audience ----\n// A removal sent to the wrong audience returns 204 and changes nothing, so a\n// mismatch is completely invisible at runtime: the node reports success and the\n// tag stays put. Fail loudly instead of silently doing nothing.\nconst MAILCHIMP_NODES = ['Fetch Current Tags', 'Remove Stale Tags', 'Add New Tags'];\nlet configuredLists = null;\ntry {\n  configuredLists = MAILCHIMP_NODES.map((n) => ({ node: n, list: $(n).params.list }));\n} catch (e) {\n  configuredLists = null; // .params unavailable on this n8n version\n}\nif (configuredLists) {\n  const distinct = [...new Set(configuredLists.map((l) => l.list))];\n  if (distinct.length > 1) {\n    throw new Error(\n      'Mailchimp nodes point at different audiences -> '\n      + configuredLists.map((l) => l.node + '=' + l.list).join(', ')\n      + '. Tag removals would go to the wrong audience and silently do nothing. '\n      + 'Set the same List (and the same credential) on every Mailchimp node.',\n    );\n  }\n}\n\n// Mutually exclusive groups. Order = precedence if a payload somehow\n// arrives with two values from the same group.\nconst GROUPS = {\n  activity: ['Active', 'Inactive'],\n  spendTier: ['Tier A', 'Tier B', 'Tier C'],\n  geo: ['Metro', 'Regional'],\n  state: ['NSW', 'VIC', 'QLD', 'SA', 'WA', 'TAS', 'ACT', 'NT'],\n  businessType: ['Gift & Homewares', 'Furniture', 'Manchester', 'Interior Stylist', 'Other'],\n};\n\n// Old / renamed values that may still be sitting on members. Removed, never\n// added. Populate from Mailchimp > Audience > Tags after an audit.\nconst RETIRED = {\n  activity: [],\n  spendTier: [],\n  geo: [],\n  state: [],\n  businessType: [],\n};\n\n// ---- desired state (this run) ----\nconst source = $('Loop Over Members').first(1).json;\nconst email = source.email;\n\n// ---- current state (from Mailchimp) ----\nconst member = $input.first().json || {};\nconst memberFound = Array.isArray(member.tags);\nconst currentTags = memberFound ? member.tags.map((t) => t && t.name).filter(Boolean) : [];\nconst fetchError = member.error ? String(member.error.message || member.error) : null;\n\n// ---- canonical lookup so 'tier a' and 'Tier  A' resolve to 'Tier A' ----\nconst canonical = new Map();\nfor (const [group, values] of Object.entries(GROUPS)) {\n  for (const v of values) canonical.set(v.toLowerCase(), v);\n  for (const v of RETIRED[group] || []) canonical.set(v.toLowerCase(), v);\n}\nconst clean = (t) => String(t == null ? '' : t).replace(/\\s+/g, ' ').trim();\nconst normalize = (t) => {\n  const c = clean(t);\n  return canonical.get(c.toLowerCase()) || c;\n};\n\nconst desiredSet = new Set((source.desiredTags || []).map(normalize).filter(Boolean));\n\n// ---- work out which groups this run has an opinion about ----\nconst conflicts = [];\nconst groupsInScope = [];\nconst managedInScope = new Map(); // lowercased -> canonical\n\nfor (const [group, values] of Object.entries(GROUPS)) {\n  const present = values.filter((v) => desiredSet.has(v));\n  if (present.length === 0) continue;\n\n  groupsInScope.push(group);\n  if (present.length > 1) {\n    conflicts.push({ group, received: present, kept: present[0] });\n    for (const loser of present.slice(1)) desiredSet.delete(loser);\n  }\n  for (const v of values.concat(RETIRED[group] || [])) managedInScope.set(v.toLowerCase(), v);\n}\n\nconst desiredTags = [...desiredSet];\nconst desiredLc = new Set(desiredTags.map((t) => t.toLowerCase()));\nconst currentLc = new Set(currentTags.map((t) => t.toLowerCase()));\n\n// Remove using the tag name EXACTLY as Mailchimp stores it.\nconst tagsToRemove = currentTags.filter(\n  (t) => managedInScope.has(t.toLowerCase()) && !desiredLc.has(t.toLowerCase()),\n);\n\n// Skip tags already on the member: re-adding is a no-op but pointless, and\n// skipping keeps tag-based automations from being poked every week.\nconst tagsToAdd = desiredTags.filter((t) => !currentLc.has(t.toLowerCase()));\n\n// Left alone on purpose — outside the managed vocabulary for this run.\nconst untouched = currentTags.filter((t) => !managedInScope.has(t.toLowerCase()));\n\n// Right tag, wrong casing. Reported rather than auto-fixed: removing and\n// re-adding would re-trigger any automation keyed on that tag.\nconst casingDrift = currentTags.filter(\n  (t) => desiredLc.has(t.toLowerCase()) && !desiredTags.includes(t),\n);\n\nconst removeLc = new Set(tagsToRemove.map((t) => t.toLowerCase()));\nconst expectedAfter = currentTags\n  .filter((t) => !removeLc.has(t.toLowerCase()))\n  .concat(tagsToAdd);\n\nreturn [{\n  json: {\n    email,\n    memberFound,\n    memberListId: member.list_id || null,\n    fetchError,\n    currentTags,\n    desiredTags,\n    groupsInScope,\n    tagsToRemove,\n    tagsToAdd,\n    untouched,\n    casingDrift,\n    conflicts,\n    expectedAfter,\n    hasRemovals: tagsToRemove.length > 0,\n    hasAdds: tagsToAdd.length > 0,\n  },\n}];\n"
+        "jsCode": "// ============================================================\n// DIFF TAGS — decide what to remove and what to add\n// ------------------------------------------------------------\n//   current tags   <- fetched from Mailchimp by the previous node\n//   desired tags   <- from the segmentation payload (master sheet)\n//\n//   tags to remove = current  MINUS  desired   (managed values only)\n//   tags to add    = desired  MINUS  current\n//\n// SCOPE RULE: a tag is only ever removed if it belongs to a group this\n// run actually has an opinion about. An abandoned-cart run that only\n// supplies [\"Abandoned Cart\",\"Shopify\"] has no opinion on activity or\n// tier, so it removes nothing. Anything outside the managed vocabulary\n// (VIP, campaign tags, Shopify, Fieldfolio...) is never removed.\n// ============================================================\n\n// ---- GUARD: every Mailchimp node must talk to the same audience ----\n// A removal sent to the wrong audience returns 204 and changes nothing, so a\n// mismatch is completely invisible at runtime: the node reports success and the\n// tag stays put. Fail loudly instead of silently doing nothing.\nconst MAILCHIMP_NODES = ['Fetch Current Tags', 'Remove One Tag', 'Add One Tag'];\nlet configuredLists = null;\ntry {\n  configuredLists = MAILCHIMP_NODES.map((n) => ({ node: n, list: $(n).params.list }));\n} catch (e) {\n  configuredLists = null; // .params unavailable on this n8n version\n}\nif (configuredLists) {\n  const distinct = [...new Set(configuredLists.map((l) => l.list))];\n  if (distinct.length > 1) {\n    throw new Error(\n      'Mailchimp nodes point at different audiences -> '\n      + configuredLists.map((l) => l.node + '=' + l.list).join(', ')\n      + '. Tag removals would go to the wrong audience and silently do nothing. '\n      + 'Set the same List (and the same credential) on every Mailchimp node.',\n    );\n  }\n}\n\n// Mutually exclusive groups. Order = precedence if a payload somehow\n// arrives with two values from the same group.\nconst GROUPS = {\n  activity: ['Active', 'Inactive'],\n  spendTier: ['Tier A', 'Tier B', 'Tier C'],\n  geo: ['Metro', 'Regional'],\n  state: ['NSW', 'VIC', 'QLD', 'SA', 'WA', 'TAS', 'ACT', 'NT'],\n  businessType: ['Gift & Homewares', 'Furniture', 'Manchester', 'Interior Stylist', 'Other'],\n};\n\n// Old / renamed values that may still be sitting on members. Removed, never\n// added. Populate from Mailchimp > Audience > Tags after an audit.\nconst RETIRED = {\n  activity: [],\n  spendTier: [],\n  geo: [],\n  state: [],\n  businessType: [],\n};\n\n// ---- desired state (this run) ----\nconst source = $('Loop Over Members').first(1).json;\nconst email = source.email;\n\n// ---- current state (from Mailchimp) ----\nconst member = $input.first().json || {};\nconst memberFound = Array.isArray(member.tags);\nconst currentTags = memberFound ? member.tags.map((t) => t && t.name).filter(Boolean) : [];\nconst fetchError = member.error ? String(member.error.message || member.error) : null;\n\n// ---- canonical lookup so 'tier a' and 'Tier  A' resolve to 'Tier A' ----\nconst canonical = new Map();\nfor (const [group, values] of Object.entries(GROUPS)) {\n  for (const v of values) canonical.set(v.toLowerCase(), v);\n  for (const v of RETIRED[group] || []) canonical.set(v.toLowerCase(), v);\n}\nconst clean = (t) => String(t == null ? '' : t).replace(/\\s+/g, ' ').trim();\nconst normalize = (t) => {\n  const c = clean(t);\n  return canonical.get(c.toLowerCase()) || c;\n};\n\nconst desiredSet = new Set((source.desiredTags || []).map(normalize).filter(Boolean));\n\n// ---- work out which groups this run has an opinion about ----\nconst conflicts = [];\nconst groupsInScope = [];\nconst managedInScope = new Map(); // lowercased -> canonical\n\nfor (const [group, values] of Object.entries(GROUPS)) {\n  const present = values.filter((v) => desiredSet.has(v));\n  if (present.length === 0) continue;\n\n  groupsInScope.push(group);\n  if (present.length > 1) {\n    conflicts.push({ group, received: present, kept: present[0] });\n    for (const loser of present.slice(1)) desiredSet.delete(loser);\n  }\n  for (const v of values.concat(RETIRED[group] || [])) managedInScope.set(v.toLowerCase(), v);\n}\n\nconst desiredTags = [...desiredSet];\nconst desiredLc = new Set(desiredTags.map((t) => t.toLowerCase()));\nconst currentLc = new Set(currentTags.map((t) => t.toLowerCase()));\n\n// Remove using the tag name EXACTLY as Mailchimp stores it.\nconst tagsToRemove = currentTags.filter(\n  (t) => managedInScope.has(t.toLowerCase()) && !desiredLc.has(t.toLowerCase()),\n);\n\n// Skip tags already on the member: re-adding is a no-op but pointless, and\n// skipping keeps tag-based automations from being poked every week.\nconst tagsToAdd = desiredTags.filter((t) => !currentLc.has(t.toLowerCase()));\n\n// Left alone on purpose — outside the managed vocabulary for this run.\nconst untouched = currentTags.filter((t) => !managedInScope.has(t.toLowerCase()));\n\n// Right tag, wrong casing. Reported rather than auto-fixed: removing and\n// re-adding would re-trigger any automation keyed on that tag.\nconst casingDrift = currentTags.filter(\n  (t) => desiredLc.has(t.toLowerCase()) && !desiredTags.includes(t),\n);\n\nconst removeLc = new Set(tagsToRemove.map((t) => t.toLowerCase()));\nconst expectedAfter = currentTags\n  .filter((t) => !removeLc.has(t.toLowerCase()))\n  .concat(tagsToAdd);\n\nreturn [{\n  json: {\n    email,\n    memberFound,\n    memberListId: member.list_id || null,\n    fetchError,\n    currentTags,\n    desiredTags,\n    groupsInScope,\n    tagsToRemove,\n    tagsToAdd,\n    untouched,\n    casingDrift,\n    conflicts,\n    expectedAfter,\n    hasRemovals: tagsToRemove.length > 0,\n    hasAdds: tagsToAdd.length > 0,\n  },\n}];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        740,
+        520,
         512
       ],
       "id": "2b3c4d5e-6f70-4839-a04b-c2d3e4f5a6b7",
@@ -111,7 +110,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        960,
+        740,
         512
       ],
       "id": "3f2e1d0c-9b8a-4756-b4c3-2d1e0f9a8b7c",
@@ -119,11 +118,26 @@
     },
     {
       "parameters": {
+        "jsCode": "// One item per tag, so the Mailchimp node makes ONE call per tag instead of\n// sending an array. Runs once for all items, so it emits exactly the removal\n// list regardless of how many items arrive.\nconst d = $('Diff Tags').first(0).json;\n\nreturn (d.tagsToRemove || []).map((tagName) => ({\n  json: { email: d.email, tagName, op: 'remove' },\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        416
+      ],
+      "id": "9a0b1c2d-3e4f-4506-9718-293a4b5c6d7e",
+      "name": "Expand Removals"
+    },
+    {
+      "parameters": {
         "resource": "memberTag",
         "operation": "delete",
         "list": "0d435a9df3",
         "email": "={{ $json.email }}",
-        "tags": "={{ $json.tagsToRemove }}",
+        "tags": [
+          "={{ $json.tagName }}"
+        ],
         "options": {}
       },
       "type": "n8n-nodes-base.mailchimp",
@@ -133,7 +147,7 @@
         416
       ],
       "id": "5d4c3b2a-1908-4e7f-a6b5-c4d3e2f1a098",
-      "name": "Remove Stale Tags",
+      "name": "Remove One Tag",
       "retryOnFail": true,
       "waitBetweenTries": 5000,
       "credentials": {
@@ -142,7 +156,9 @@
           "name": "J-Elliot-marketing"
         }
       },
-      "onError": "continueRegularOutput"
+      "onError": "continueRegularOutput",
+      "notes": "One call per tag",
+      "notesInFlow": true
     },
     {
       "parameters": {
@@ -180,20 +196,35 @@
     },
     {
       "parameters": {
+        "jsCode": "// One item per tag, so the Mailchimp node makes ONE call per tag instead of\n// sending an array. Reads from Diff Tags rather than its own input, so a\n// preceding removal call cannot change what gets added.\nconst d = $('Diff Tags').first(0).json;\n\nreturn (d.tagsToAdd || []).map((tagName) => ({\n  json: { email: d.email, tagName, op: 'add' },\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        416
+      ],
+      "id": "0b1c2d3e-4f5a-4617-8829-3a4b5c6d7e8f",
+      "name": "Expand Adds"
+    },
+    {
+      "parameters": {
         "resource": "memberTag",
         "list": "0d435a9df3",
-        "email": "={{ $('Diff Tags').first(0).json.email }}",
-        "tags": "={{ $('Diff Tags').first(0).json.tagsToAdd }}",
+        "email": "={{ $json.email }}",
+        "tags": [
+          "={{ $json.tagName }}"
+        ],
         "options": {}
       },
       "type": "n8n-nodes-base.mailchimp",
       "typeVersion": 1,
       "position": [
-        1620,
+        1840,
         416
       ],
       "id": "ec328a57-31ac-4a20-a0fb-b03933be75fc",
-      "name": "Add New Tags",
+      "name": "Add One Tag",
       "retryOnFail": true,
       "waitBetweenTries": 5000,
       "credentials": {
@@ -202,7 +233,40 @@
           "name": "J-Elliot-marketing"
         }
       },
-      "onError": "continueRegularOutput"
+      "onError": "continueRegularOutput",
+      "notes": "One call per tag",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "resource": "member",
+        "operation": "get",
+        "list": "0d435a9df3",
+        "email": "={{ $('Diff Tags').first(0).json.email }}",
+        "options": {
+          "fields": "email_address,status,tags,list_id"
+        }
+      },
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [
+        2060,
+        512
+      ],
+      "id": "7d8e9f0a-1b2c-43d4-a5e6-f7a8b9c0d1e2",
+      "name": "Verify Tags",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "mailchimpApi": {
+          "id": "fwuYrbbxnMVpdwa7",
+          "name": "J-Elliot-marketing"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "disabled": true,
+      "notes": "Enable to prove what Mailchimp actually did",
+      "notesInFlow": true
     },
     {
       "parameters": {
@@ -211,7 +275,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2060,
+        2280,
         512
       ],
       "id": "6c7d8e9f-0a1b-42c3-94d5-e6f7a8b9c0d1",
@@ -224,7 +288,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        520,
+        300,
         272
       ],
       "id": "8e7d6c5b-4a39-4281-b70f-6e5d4c3b2a19",
@@ -243,7 +307,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        60,
+        -160,
         80
       ],
       "id": "9da9d2f9-b43f-4539-afdc-1a24e29b820f",
@@ -261,43 +325,11 @@
       "type": "n8n-nodes-base.errorTrigger",
       "typeVersion": 1,
       "position": [
-        -160,
+        -380,
         80
       ],
       "id": "2801b86c-a9ae-43f1-9d94-78fd6024eab5",
       "name": "Error Trigger"
-    },
-    {
-      "parameters": {
-        "resource": "member",
-        "operation": "get",
-        "list": "0d435a9df3",
-        "email": "={{ $('Diff Tags').first(0).json.email }}",
-        "options": {
-          "fields": "email_address,status,tags"
-        }
-      },
-      "type": "n8n-nodes-base.mailchimp",
-      "typeVersion": 1,
-      "position": [
-        1840,
-        416
-      ],
-      "id": "7d8e9f0a-1b2c-43d4-a5e6-f7a8b9c0d1e2",
-      "name": "Verify Tags",
-      "retryOnFail": true,
-      "waitBetweenTries": 5000,
-      "alwaysOutputData": true,
-      "credentials": {
-        "mailchimpApi": {
-          "id": "fwuYrbbxnMVpdwa7",
-          "name": "J-Elliot-marketing"
-        }
-      },
-      "onError": "continueRegularOutput",
-      "disabled": true,
-      "notes": "Enable only when you need proof of what Mailchimp actually did. Disabled = passthrough.",
-      "notesInFlow": true
     }
   ],
   "pinData": {
@@ -425,7 +457,7 @@
       "main": [
         [
           {
-            "node": "Remove Stale Tags",
+            "node": "Expand Removals",
             "type": "main",
             "index": 0
           }
@@ -439,7 +471,18 @@
         ]
       ]
     },
-    "Remove Stale Tags": {
+    "Expand Removals": {
+      "main": [
+        [
+          {
+            "node": "Remove One Tag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove One Tag": {
       "main": [
         [
           {
@@ -454,7 +497,7 @@
       "main": [
         [
           {
-            "node": "Add New Tags",
+            "node": "Expand Adds",
             "type": "main",
             "index": 0
           }
@@ -468,11 +511,33 @@
         ]
       ]
     },
-    "Add New Tags": {
+    "Expand Adds": {
+      "main": [
+        [
+          {
+            "node": "Add One Tag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add One Tag": {
       "main": [
         [
           {
             "node": "Verify Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Tags": {
+      "main": [
+        [
+          {
+            "node": "Record Result",
             "type": "main",
             "index": 0
           }
@@ -495,17 +560,6 @@
         [
           {
             "node": "Send a message",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Verify Tags": {
-      "main": [
-        [
-          {
-            "node": "Record Result",
             "type": "main",
             "index": 0
           }

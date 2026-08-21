@@ -12,7 +12,7 @@
 //   node scripts/simulate_tag_sync.js
 // ============================================================
 
-const { run, wrap } = require('./lib/nodes');
+const { run, runRaw, wrap } = require('./lib/nodes');
 
 class FakeMailchimp {
   constructor(seed, opts = {}) {
@@ -39,6 +39,7 @@ class FakeMailchimp {
 }
 
 const tagCall = (mc, operation, email, tags) => {
+  if (tags.length !== 1) throw new Error(`expected one tag per call, got ${tags.length}`);
   const body = { tags: tags.map((t) => ({ name: t, status: operation === 'create' ? 'active' : 'inactive' })) };
   try { mc.postTags(email, body); } catch (e) { /* onError: continueRegularOutput */ }
 };
@@ -59,8 +60,18 @@ function runNew(items, mc) {
 
     const d = run('Diff Tags', [member], { 'Loop Over Members': { branches: [[], wrap([desired])] } })[0];
 
-    if (d.hasRemovals) tagCall(mc, 'delete', d.email, d.tagsToRemove);   // remove first
-    if (d.hasAdds) tagCall(mc, 'create', d.email, d.tagsToAdd);          // then add
+    // Expand Removals -> Remove One Tag: ONE call per tag
+    if (d.hasRemovals) {
+      for (const { json: op } of runRaw('Expand Removals', [d], { 'Diff Tags': { branches: [wrap([d])] } })) {
+        tagCall(mc, 'delete', op.email, [op.tagName]);
+      }
+    }
+    // Expand Adds -> Add One Tag: ONE call per tag
+    if (d.hasAdds) {
+      for (const { json: op } of runRaw('Expand Adds', [d], { 'Diff Tags': { branches: [wrap([d])] } })) {
+        tagCall(mc, 'create', op.email, [op.tagName]);
+      }
+    }
 
     let after;                                                          // Verify Tags
     try { after = mc.getMember(d.email); }

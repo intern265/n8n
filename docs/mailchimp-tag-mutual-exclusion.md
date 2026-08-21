@@ -146,34 +146,54 @@ Two implementation details that matter:
   so a 404 produces an item (flagged `memberFound: false`) instead of stalling
   the chain, and the response stays small.
 
-## Gotcha: the Tags field must hold a bare expression
+## One call per tag
 
-`tags` is a multi-value field. The workflow binds the **whole parameter** to an
-expression returning an array:
-
-```json
-"tags": "={{ $json.tagsToRemove }}"
-```
-
-If it is instead stored as a list with one entry containing that expression —
-which is what the n8n UI produces if you click *Add Tag* and paste the
-expression into the row — the node receives `[["Tier B","Inactive"]]` and builds:
+Both write nodes send exactly one tag per request. The `tags` field holds a
+single list entry containing a plain per-item expression:
 
 ```json
-{"tags":[{"name":["Tier B","Inactive"],"status":"inactive"}]}
+"tags": ["={{ $json.tagName }}"]
 ```
 
-`name` is an array, so Mailchimp answers **400 Bad request - please check your
-parameters**. Both write nodes are affected identically; the add node just fails
-later, because it is skipped whenever `tagsToAdd` is empty.
+This is the same shape the original `Add Member Tag` node used in production. It
+is deliberately **not** an array-valued expression on the whole parameter: that
+form works at runtime but the n8n editor rewraps it the moment anyone opens the
+node, producing `{"name": ["Tier B","Inactive"]}` and a 400 from Mailchimp.
 
-To check: select the node, Ctrl+C, paste into a text editor and look at whether
-`"tags"` is a string or an array. `scripts/validate_workflow.js` asserts this.
+`Expand Removals` and `Expand Adds` turn the diff into one item per tag. Both
+read from `$('Diff Tags').first(0)` rather than their own input, so they emit the
+right list no matter how many items arrive, and a preceding removal call cannot
+change what gets added. The Mailchimp node then iterates its input items, making
+one request each:
 
-If the editor keeps rewrapping the field, fan the writes out to one tag per item
-instead — each row then holds a plain `{{ $json.tagName }}`, the same shape the
-original workflow used. With fetch-and-diff the removal list is usually one or
-two tags, so the extra calls are cheap.
+```
+POST /members/{email}/tags  {"tags":[{"name":"Inactive","status":"inactive"}]}
+POST /members/{email}/tags  {"tags":[{"name":"Active","status":"active"}]}
+```
+
+Because fetch-and-diff only ever acts on real differences, that is typically one
+or two calls per member, not one per tag in the vocabulary.
+
+Ordering is structural: `Expand Removals -> Remove One Tag -> Has New Tags? ->
+Expand Adds -> Add One Tag`. Every removal completes before any add, and there is
+no nested loop — the single `Loop Over Members` batch of 1 is the only loop in
+the workflow.
+
+## Audience guard
+
+`Diff Tags` reads the configured List off each Mailchimp node via
+`$(node).params` and throws if they disagree:
+
+```
+Mailchimp nodes point at different audiences -> Fetch Current Tags=0d435a9df3,
+Remove One Tag=OTHER_AUDIENCE, Add One Tag=0d435a9df3. Tag removals would go to
+the wrong audience and silently do nothing.
+```
+
+This is the failure mode that cannot be seen any other way: a removal sent to the
+wrong audience returns 204, the node reports `success: true`, and the tag stays
+put. The read is wrapped in try/catch, so an n8n version without `.params`
+degrades to the previous behaviour instead of breaking.
 
 ## Edge cases
 

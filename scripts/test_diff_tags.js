@@ -74,10 +74,10 @@ const member = { email_address: 'a@b.com', list_id: '0d435a9df3', tags: [{ id: 1
 const ctx = { 'Loop Over Members': { branches: [[], wrap([desiredOne])] } };
 let threw = null;
 try {
-  run('Diff Tags', [member], { ...ctx, 'Remove Stale Tags': { params: { list: 'OTHER_AUDIENCE' } } });
+  run('Diff Tags', [member], { ...ctx, 'Remove One Tag': { params: { list: 'OTHER_AUDIENCE' } } });
 } catch (e) { threw = e.message; }
 check('a node pointing at another audience fails the run', !!threw && threw.includes('different audiences'));
-check('...and names the offending nodes', !!threw && threw.includes('Remove Stale Tags=OTHER_AUDIENCE'));
+check('...and names the offending nodes', !!threw && threw.includes('Remove One Tag=OTHER_AUDIENCE'));
 check('matching audiences run normally', run('Diff Tags', [member], ctx)[0].tagsToRemove.includes('Inactive'));
 check('member audience reported for cross-checking',
   run('Diff Tags', [member], ctx)[0].memberListId === '0d435a9df3');
