@@ -68,6 +68,20 @@ d = diff(expand('ghost@b.com', ['VIC', 'Metro', 'Active', 'Tier C']), [], { notF
 check('missing member: flagged, no removals attempted',
   d.memberFound === false && d.fetchError && d.tagsToRemove.length === 0);
 
+console.log('\nAUDIENCE GUARD');
+const desiredOne = run('Build Desired State', expand('a@b.com', ['VIC', 'Active']))[0];
+const member = { email_address: 'a@b.com', list_id: '0d435a9df3', tags: [{ id: 1, name: 'Inactive' }] };
+const ctx = { 'Loop Over Members': { branches: [[], wrap([desiredOne])] } };
+let threw = null;
+try {
+  run('Diff Tags', [member], { ...ctx, 'Remove Stale Tags': { params: { list: 'OTHER_AUDIENCE' } } });
+} catch (e) { threw = e.message; }
+check('a node pointing at another audience fails the run', !!threw && threw.includes('different audiences'));
+check('...and names the offending nodes', !!threw && threw.includes('Remove Stale Tags=OTHER_AUDIENCE'));
+check('matching audiences run normally', run('Diff Tags', [member], ctx)[0].tagsToRemove.includes('Inactive'));
+check('member audience reported for cross-checking',
+  run('Diff Tags', [member], ctx)[0].memberListId === '0d435a9df3');
+
 console.log('\nBUILD DESIRED STATE');
 const b = run('Build Desired State', [
   ...expand('One@Example.com ', ['VIC', 'Active']),

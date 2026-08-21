@@ -20,7 +20,11 @@ function makeProxy(nodeData) {
   return (name) => {
     const branches = (nodeData[name] || {}).branches || [];
     const pick = (b = 0) => branches[b] || [];
+    const declared = workflow.nodes.find((x) => x.name === name);
     return {
+      params: (nodeData[name] || {}).params
+        || (declared ? declared.parameters : undefined)
+        || {},
       all: (b = 0) => pick(b),
       first: (b = 0) => pick(b)[0],
       last: (b = 0) => pick(b)[pick(b).length - 1],
