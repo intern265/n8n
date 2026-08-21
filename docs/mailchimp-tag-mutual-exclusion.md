@@ -20,21 +20,47 @@ Same failure for every exclusive dimension: `Tier A`/`Tier B`/`Tier C`,
 on those tags silently over-count, and a member can sit in two contradictory
 campaigns at once.
 
-## The fix
+## The fix: fetch, diff, remove, add
 
-Mailchimp's tags endpoint takes **add and remove in the same shape** — only
-`status` differs. The n8n Mailchimp node exposes both:
+Mailchimp's tags endpoint takes add and remove in the same shape — only
+`status` differs — and the n8n Mailchimp node exposes both:
 
-- `resource: memberTag`, `operation: create` → `status: "active"` (add)
-- `resource: memberTag`, `operation: delete` → `status: "inactive"` (remove)
+- `resource: memberTag`, `operation: create` -> `status: "active"` (add)
+- `resource: memberTag`, `operation: delete` -> `status: "inactive"` (remove)
+- `resource: member`, `operation: get` -> `GET /lists/{id}/members/{email}`,
+  whose response carries the member's `tags` array
 
-Both accept an **array** of tag names in a single call, and removing a tag the
-member doesn't have is a no-op (`204`).
+So each member is reconciled against its real state rather than against what
+we assume it holds:
 
-So the tag set is treated as a set of **mutually exclusive groups** and enforced
-statelessly. For every group where this run supplies a value, that value is
-added and *every sibling value in the group is removed* — regardless of what we
-think the member currently has:
+```
+current tags   <- fetched from Mailchimp
+desired tags   <- the segmentation payload (master sheet)
+
+tags to remove = current MINUS desired     (managed values only, see scope rule)
+tags to add    = desired MINUS current
+```
+
+Reading first buys four things a blind remove-then-add cannot give you:
+
+1. **Only real changes are written.** A member already correct costs one read
+   and zero writes, instead of two writes every week.
+2. **Removal calls name only tags that are actually on the member**, so the
+   execution log is a readable record of what changed.
+3. **You can see what happened.** Every member produces a row with `before`,
+   `removed`, `added`, `untouched` and `after` — which is what you need when the
+   answer to "is it working?" has to be more than "probably".
+4. **Anomalies surface**: members missing from the audience, and tags that are
+   right but stored with different casing.
+
+### Scope rule — the part the diff alone does not give you
+
+"Remove everything on the member that is not in the master sheet" would delete
+`Abandoned Cart`, `Shopify`, `Draft-Fieldfolio`, `Fieldfolio` and every manual
+tag the marketing team applies, because none of those live in the sheet. Three
+of the five workflows write tags that are not segmentation tags.
+
+So removal is bounded by a declared vocabulary of mutually exclusive groups:
 
 ```
 activity      Active | Inactive
@@ -44,81 +70,78 @@ state         NSW | VIC | QLD | SA | WA | TAS | ACT | NT
 businessType  Gift & Homewares | Furniture | Manchester | Interior Stylist | Other
 ```
 
-Because removals are batched into one call, "remove the 15 siblings" costs
-exactly the same as "remove the 1 sibling we think is stale" — one API call. That
-buys three things:
-
-1. **No state needed.** We never have to know what Mailchimp currently holds, so
-   the fix cannot be defeated by cache drift, a failed earlier sync, or a manual
-   edit in the Mailchimp UI.
-2. **Self-healing.** Any member with an existing double tag is normalised the
-   next time it syncs for any reason.
-3. **Fewer calls, not more.** Today: one call per tag (~6 per member). After:
-   one remove call + one add call = **2 per member**.
-
-### Safety rule
-
-Only values listed in `GROUPS` / `RETIRED` are ever removed. Everything else on
-the member — `Abandoned Cart`, `Shopify`, `Draft-Fieldfolio`, `Fieldfolio`, `VIP`,
-manual campaign tags — is untouched. The removal set is an explicit allow-list,
-never "remove anything not in this run's tag list".
+A tag is removed only if **both** are true: it is in the managed vocabulary, and
+it belongs to a group this run actually supplies a value for. An abandoned-cart
+run sending `["Abandoned Cart","Shopify"]` supplies no group values, so its
+removal scope is empty and it touches nothing else on the member. Everything
+outside the vocabulary is never a removal candidate at all.
 
 ## What changed
 
 Only `mailchimp tags update`. `Mailchimp sync`, the Shopify workflow and the
-Fieldfolio workflow need **no changes** — the new Code node accepts the existing
-per-tag item shape (`{ email, tagName }`) and regroups it by email, as well as the
-preferred `{ email, tags: [...] }` shape.
+Fieldfolio workflow need **no changes** — `Build Desired State` accepts the
+existing per-tag item shape (`{ email, tagName }`) and regroups it by email, as
+well as `{ email, tags: [...] }`.
 
 ```
 When Executed by Another Workflow
-  └─ Build Tag Ops (Code)          one item per email: tagsToAdd / tagsToRemove
-       └─ Loop Over Items (batch 1)
+  └─ Build Desired State (Code)        one item per email
+       └─ Loop Over Members (batch 1)
             ├─ done → Return Tag Sync Summary
-            └─ loop → Has Stale Tags?
-                        ├─ true  → Remove Stale Tags (memberTag: delete)
-                        │            └─ Add Current Tags (memberTag: create)
-                        └─ false → Add Current Tags
-                                     └─ back to Loop Over Items
+            └─ loop → Fetch Current Tags (member: get)
+                        └─ Diff Tags (Code)
+                             └─ Has Stale Tags?
+                                  ├─ true  → Remove Stale Tags (memberTag: delete) ─┐
+                                  └─ false ────────────────────────────────────────┤
+                                                                    Has New Tags?  ←┘
+                                                                      ├─ true  → Add New Tags
+                                                                      └─ false → Record Result
+                                                                                    └─ back to loop
 ```
 
-Remove runs before add, per member, as required.
+Cost per member: 1 read, plus a write only when there is something to write —
+0, 1 or 2. The old workflow spent one write per tag whether or not anything
+had changed.
 
-`Add Current Tags` reads its payload from `$('Loop Over Items').first(1)` rather
-than `$json` on purpose: `Remove Stale Tags` is set to `continueRegularOutput`, so
-on an API error the item reaching the add node is an error object with no
-`tagsToAdd`. Reading from the loop's own output branch makes the add immune to a
-failed remove.
+Two implementation details that matter:
+
+- `Add New Tags` reads `$('Diff Tags').first(0)` rather than `$json`. Both
+  Mailchimp nodes are `continueRegularOutput`, so after a failed remove the item
+  on the wire is an error object with no `tagsToAdd`; reading back from the diff
+  node makes the add immune to that.
+- `Fetch Current Tags` is `alwaysOutputData` with `fields=email_address,status,tags`,
+  so a 404 produces an item (flagged `memberFound: false`) instead of stalling
+  the chain, and the response stays small.
 
 ## Edge cases
 
 | # | Edge case | Effect | Handling |
 |---|---|---|---|
-| 1 | **Members already double-tagged** | Delta-only sync means an `unchanged` customer never gets pushed again, so historical corruption is never repaired | One-off backfill: force `_action = 'changed'` for all rows in workflow 1 (or clear `TagsHash` in the sheet) and let the run normalise everyone |
-| 2 | **Automations re-firing during backfill** | ~3,700 members × tag events can retrigger journeys | Set `isSyncing: true` in the `options` of both Mailchimp nodes **for the backfill run only**, then revert. Normal runs never remove-and-re-add the same tag, so no spurious events |
-| 3 | **Manual tags in Mailchimp** (`VIP`, `Do Not Email`, event tags) | Would be destroyed by a naive "remove everything not in this run" | Removal is an explicit allow-list of group values only — verified by test |
-| 4 | **Cross-source collisions** — an E-Suite customer who also abandons a Shopify cart | E-Suite run could strip `Abandoned Cart`, or the Shopify run could strip `Active` | Those tags are in no group, so neither run touches them. Note: `Abandoned Cart` is deliberately *not* part of the `activity` group |
-| 5 | **Casing / whitespace drift** (`tier a`, `Tier  A`) | Duplicate near-identical tags in the audience | Input is trimmed, whitespace-collapsed and mapped back to canonical casing before comparison |
-| 6 | **Renamed or retired taxonomy values** (e.g. business type renamed) | Stale tag lingers because it is no longer a known sibling | `RETIRED` map per group: values that are removed but never added. Audit Audience → Tags once and populate it |
-| 7 | **Business type unknown / `Unclassified`** | Group has no value this run | The group is skipped entirely — nothing added, nothing removed. We never strip a dimension we can't replace |
-| 8 | **Both values arrive from upstream** (`Active` *and* `Inactive` in one payload) | Would re-create the bug at source | Group order is precedence — first wins, loser is removed, and the item carries `conflicts` so it shows up in the run summary |
-| 9 | **Remove succeeds, add fails** | Member left with no tag for that dimension — worse than a double tag | `retryOnFail` + 5s backoff on both nodes; add reads from the loop branch so a failed remove can't cascade. Residual risk is one weekly cycle, cleared on the next run |
-| 10 | **Member doesn't exist / archived** (404) | Tag call fails silently | Both nodes are `continueRegularOutput` so one bad member can't kill the batch — but see the follow-up below, failures are currently invisible |
-| 11 | **Two accounts sharing one email** (franchise locations, per the README) | Both records map to one Mailchimp member; each run flips the tags, and both stay permanently "changed" | Deduplicate by email *before* the Mailchimp push — merge to the best tier and `Active` if any location is active. Not fixed here; needs a change in workflow 1 |
-| 12 | **Unsubscribed / cleaned members** | `Update a member` sets `status: subscribed`, which 400s for an unsubscribed contact and is a compliance problem | Should use an upsert with `status_if_new` instead of forcing `subscribed`. Not fixed here |
-| 13 | **Rate limits** | Mailchimp allows 10 concurrent connections | Calls are sequential inside the loop, with retry + 5s backoff. The backfill (~7,400 calls) is worth chunking or moving to `POST /batches` |
-| 14 | **Empty tag names** | Blank tag created in the audience | Empty/null values are dropped; an item with nothing to add is skipped rather than issuing a remove-only call |
+| 1 | **The fetch fails** (429, timeout) | We cannot know the current tags, so removals are skipped and the stale tag survives another week | The node retries with a 5s backoff; if it still fails the member is recorded with `memberFound: false` and an `error`, so it is **visible rather than silent**. Adds still go through (they are idempotent). This is the one failure mode this design has that a blind remove-then-add does not — covered by a test |
+| 2 | **Members already double-tagged** | Delta-only sync means an `unchanged` customer is never pushed again, so historical corruption is never repaired | One-off backfill: force `_action = 'changed'` in workflow 1 (or clear `TagsHash` in the sheet) and let the run reconcile everyone |
+| 3 | **Automations re-firing during the backfill** | ~3,700 members' worth of tag events could retrigger journeys | Set `isSyncing: true` in `options` on both write nodes **for the backfill only**. Normal runs skip tags already present, so a steady-state member generates no tag events at all |
+| 4 | **Manual tags** (`VIP`, `Do Not Email`, event tags) | Destroyed by a naive "remove everything not in the sheet" | Removal is bounded by the managed vocabulary; everything else is reported under `untouched` |
+| 5 | **Cross-source collisions** — an E-Suite customer who also abandons a Shopify cart | The E-Suite run could strip `Abandoned Cart`, or the Shopify run could strip `Active` | The scope rule: a run only removes within groups it supplies a value for. Verified by test |
+| 6 | **Casing drift** (`vic` vs `VIC`) | Near-duplicate tags in the audience | Matching is case-insensitive, so no churn. The variant is reported in `casingDrift` for a manual cleanup — auto-fixing would mean remove+re-add, which re-fires automations |
+| 7 | **Renamed or retired taxonomy values** | A stale tag is no longer a known group value, so it is out of scope for removal | `RETIRED` map per group: values that are removed but never added. Audit Audience → Tags once and populate it |
+| 8 | **Business type unknown / `Unclassified`** | Group has no value this run | Group is out of scope — nothing added, nothing removed. A dimension is never stripped without a replacement |
+| 9 | **Both values arrive from upstream** (`Active` *and* `Inactive`) | Would recreate the bug at source | Group order is precedence: first wins, the loser is removed, and the row carries `conflicts` so it shows in the summary |
+| 10 | **Remove succeeds, add fails** | Member left with no tag for that dimension | Retry with backoff on both nodes; the add reads back from `Diff Tags` so a failed remove cannot cascade. Residual exposure is one weekly cycle |
+| 11 | **Member not in the audience** (404) | Tag calls would fail | The fetch flags `memberFound: false`, the row carries the error, and the batch continues |
+| 12 | **Two accounts sharing one email** (franchise locations, per the README) | Both map to one member; each run flips the tags and both records stay permanently "changed" | Deduplicate by email *before* the Mailchimp push — best tier, `Active` if any location is active. Not fixed here; needs a change in workflow 1 |
+| 13 | **Unsubscribed / cleaned members** | `Update a member` forces `status: subscribed`, which 400s and is a compliance problem | Should be an upsert with `status_if_new`. Not fixed here |
+| 14 | **Rate limits** | Mailchimp allows 10 concurrent connections | Calls are sequential; retry with 5s backoff. The read adds one call per member — see the note below on batching if that becomes a problem |
+| 15 | **Empty tag names** | Blank tag created in the audience | Empty values dropped; a member with nothing desired is skipped entirely |
 
-## Known follow-ups (not in this change)
+### On the extra API call
 
-1. **Failures are recorded as successes.** Both Mailchimp nodes continue on
-   error, and workflow 1 stamps `LastSynced` + the new `TagsHash` regardless. A
-   member whose tag call 404'd looks synced forever and is never retried. Route
-   the error output to a collector and only write `TagsHash` back for members
-   that actually succeeded.
-2. **Dedupe by email** before the Mailchimp push (edge case 11).
-3. **Tag audit workflow** — walk the audience and report any member carrying two
-   values from the same group. Good weekly canary that this stays fixed.
+One read per member is the price of knowing the real state. At steady state
+(100-400 changed members) that is 100-400 reads and *fewer* writes than today,
+so the total drops. For the ~3,700-member backfill it is worth fetching the
+audience in bulk instead — `GET /lists/{id}/members?fields=members.email_address,members.tags&count=1000`
+is 4 calls for the whole list — and diffing against that map. That only works if
+`Mailchimp sync` is changed to hand this workflow all members at once; today it
+calls it once per member, so the per-member read is the right fit.
 
 ## Testing
 
@@ -127,27 +150,29 @@ Three layers, in the order you should run them.
 ### 1. Offline — no Mailchimp involved
 
 ```
-node scripts/test_build_tag_ops.js     # tag logic against 7 input scenarios
+node scripts/test_diff_tags.js         # the two Code nodes, 14 scenarios
 node scripts/validate_workflow.js      # wiring, branch indices, node ops, expressions
 node scripts/simulate_tag_sync.js      # replays old vs new against a fake audience
 ```
 
-`simulate_tag_sync.js` implements the real endpoint semantics (`status: active`
-adds, `status: inactive` removes, removing an absent tag is a no-op), seeds a
-dummy audience in the corrupted state, and runs **both** the old add-only
-workflow and the patched one over identical input. The old version must fail —
-a test that passes on the broken code proves nothing.
+`simulate_tag_sync.js` implements both endpoints (the member GET, and the tags
+POST where `status: active` adds and `status: inactive` removes, with removal of
+an absent tag a no-op), seeds a dummy audience in the corrupted state, and runs
+**both** the old add-only workflow and the patched one over identical input. The
+old version must fail — a test that passes on the broken code proves nothing.
 
-Current result: old workflow leaves 4 of 5 members with conflicting tags; patched
-workflow leaves 0, preserves `VIP` / `Trade Show 2025` / `Abandoned Cart`, and
-drops the call count from 27 to 11. 12/12 assertions pass.
+Current result: the old workflow leaves 4 of 6 members conflicted; the patched one
+leaves 0, preserves `VIP` / `Trade Show 2025` / `Abandoned Cart`, and goes from 32
+writes to 10 writes + 7 reads. It also replays a degraded run where the fetch fails,
+to prove that case is reported rather than silently skipped. 16/16 assertions pass.
 
 ### 2. In n8n, without touching Mailchimp
 
 Import the workflow, then **disable both Mailchimp nodes** and execute with the
-pinned data. Inspect the `Build Tag Ops` output: one item per email carrying
-`tagsToAdd`, `tagsToRemove`, `hasRemovals` and `conflicts`. Nothing is written to
-Mailchimp, so this is a zero-risk first look.
+pinned data. Leave `Fetch Current Tags` enabled and disable only the two write nodes — then the
+`Diff Tags` output shows the real `currentTags`, `tagsToRemove`, `tagsToAdd` and
+`expectedAfter` for each member without changing anything. That is the safest and
+most informative dry run available.
 
 Note: the `tags` field on both Mailchimp nodes is bound to an expression that
 returns an **array** (`={{ $json.tagsToRemove }}`). n8n resolves this correctly at
@@ -161,8 +186,9 @@ field in the UI, or the binding is lost.
 2. In Mailchimp, deliberately break it: add **both** `Active` and `Inactive`, and
    both `Tier B` and `Tier C`. Add a `VIP` tag as a canary.
 3. Re-enable the Mailchimp nodes, pin that one member's tags, execute.
-4. Check the two node executions: the remove call should carry ~15 tag names with
-   `status: inactive`, the add call ~5 with `status: active`.
+4. Check the node executions: `Diff Tags` should show `currentTags` matching what
+   you set up, `tagsToRemove` naming only the tags you deliberately broke, and
+   `tagsToAdd` naming only what is genuinely missing.
 5. In Mailchimp, confirm the member now has exactly one activity, tier, geo, state
    and business-type tag — and that `VIP` is still there.
 6. Run the parent `Mailchimp sync` with pinned data for the same member to confirm

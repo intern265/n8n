@@ -1,16 +1,10 @@
 // Structural checks on workflows/mailchimp_tags_update.json — the things the
-// logic simulation cannot cover: node wiring, branch indices, node operations
-// and expression references.
-//
+// logic tests cannot cover: wiring, branch indices, node operations, expressions.
 //   node scripts/validate_workflow.js
-
-const fs = require('fs');
-const path = require('path');
-const wf = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'workflows', 'mailchimp_tags_update.json'), 'utf8'));
+const { workflow: wf } = require('./lib/nodes');
 
 const byName = Object.fromEntries(wf.nodes.map((n) => [n.name, n]));
-const conns = wf.connections;
-const out = (from, i) => (conns[from]?.main?.[i] || []).map((c) => c.node);
+const out = (from, i) => ((wf.connections[from] || {}).main || [])[i]?.map((c) => c.node) || [];
 
 let failed = 0;
 const check = (name, pass, detail = '') => {
@@ -19,61 +13,64 @@ const check = (name, pass, detail = '') => {
 };
 
 console.log('\nWIRING');
-// every connection endpoint must exist
 const dangling = [];
-for (const [from, spec] of Object.entries(conns)) {
+for (const [from, spec] of Object.entries(wf.connections)) {
   if (!byName[from]) dangling.push(from);
   for (const branch of spec.main || []) for (const c of branch) if (!byName[c.node]) dangling.push(c.node);
 }
 check('no dangling connections', dangling.length === 0, dangling.join(', '));
-
-check('trigger feeds Build Tag Ops', out('When Executed by Another Workflow', 0).includes('Build Tag Ops'));
-check('Build Tag Ops feeds the loop', out('Build Tag Ops', 0).includes('Loop Over Items'));
-// splitInBatches v3: output 0 = done, output 1 = loop
-check('loop "done" branch (0) -> summary', out('Loop Over Items', 0).includes('Return Tag Sync Summary'));
-check('loop "loop" branch (1) -> IF', out('Loop Over Items', 1).includes('Has Stale Tags?'));
-check('IF true (0) -> Remove Stale Tags', out('Has Stale Tags?', 0).includes('Remove Stale Tags'));
-check('IF false (1) -> Add Current Tags', out('Has Stale Tags?', 1).includes('Add Current Tags'));
-check('REMOVE RUNS BEFORE ADD', out('Remove Stale Tags', 0).includes('Add Current Tags'));
-check('remove never returns straight to the loop', !out('Remove Stale Tags', 0).includes('Loop Over Items'));
-check('add closes the loop', out('Add Current Tags', 0).includes('Loop Over Items'));
-check('error trigger wired to Gmail', out('Error Trigger', 0).includes('Send a message'));
+check('trigger -> Build Desired State', out('When Executed by Another Workflow', 0).includes('Build Desired State'));
+check('Build Desired State -> loop', out('Build Desired State', 0).includes('Loop Over Members'));
+// splitInBatches v3: branch 0 = done, branch 1 = loop
+check('loop done (0) -> summary', out('Loop Over Members', 0).includes('Return Tag Sync Summary'));
+check('loop body (1) -> Fetch Current Tags', out('Loop Over Members', 1).includes('Fetch Current Tags'));
+check('FETCH RUNS BEFORE THE DIFF', out('Fetch Current Tags', 0).includes('Diff Tags'));
+check('Diff Tags -> Has Stale Tags?', out('Diff Tags', 0).includes('Has Stale Tags?'));
+check('stale true (0) -> Remove Stale Tags', out('Has Stale Tags?', 0).includes('Remove Stale Tags'));
+check('stale false (1) skips straight to Has New Tags?', out('Has Stale Tags?', 1).includes('Has New Tags?'));
+check('REMOVE RUNS BEFORE ADD', out('Remove Stale Tags', 0).includes('Has New Tags?'));
+check('new true (0) -> Add New Tags', out('Has New Tags?', 0).includes('Add New Tags'));
+check('new false (1) -> Record Result (no wasted call)', out('Has New Tags?', 1).includes('Record Result'));
+check('Add New Tags -> Record Result', out('Add New Tags', 0).includes('Record Result'));
+check('Record Result closes the loop', out('Record Result', 0).includes('Loop Over Members'));
+check('error trigger -> Gmail', out('Error Trigger', 0).includes('Send a message'));
 
 console.log('\nNODE CONFIG');
+const fetch = byName['Fetch Current Tags'];
 const rm = byName['Remove Stale Tags'];
-const add = byName['Add Current Tags'];
-check('remove node uses memberTag:delete (status inactive)',
+const add = byName['Add New Tags'];
+check('fetch node reads the member (GET /members/{email})',
+  fetch.parameters.resource === 'member' && fetch.parameters.operation === 'get');
+check('fetch asks for the tags field', String(fetch.parameters.options.fields).includes('tags'));
+check('fetch always outputs data so a 404 cannot stall the chain', fetch.alwaysOutputData === true);
+check('remove uses memberTag:delete (status inactive)',
   rm.parameters.resource === 'memberTag' && rm.parameters.operation === 'delete');
-check('add node uses memberTag:create (node default = status active)',
+check('add uses memberTag:create (node default = status active)',
   add.parameters.resource === 'memberTag' && !add.parameters.operation);
-check('both target the same audience',
-  rm.parameters.list === add.parameters.list, rm.parameters.list);
-check('both carry the Mailchimp credential',
-  !!rm.credentials?.mailchimpApi && !!add.credentials?.mailchimpApi);
-check('both retry on failure', rm.retryOnFail === true && add.retryOnFail === true);
-check('both continue on error so one bad member cannot kill the batch',
-  rm.onError === 'continueRegularOutput' && add.onError === 'continueRegularOutput');
-check('loop batch size is 1', byName['Loop Over Items'].parameters.batchSize === 1);
-check('IF tests hasRemovals is true',
-  byName['Has Stale Tags?'].parameters.conditions.conditions[0].leftValue === '={{ $json.hasRemovals }}' &&
-  byName['Has Stale Tags?'].parameters.conditions.conditions[0].operator.operation === 'true');
+check('all three target the same audience',
+  fetch.parameters.list === rm.parameters.list && rm.parameters.list === add.parameters.list, rm.parameters.list);
+check('all three carry the Mailchimp credential',
+  [fetch, rm, add].every((n) => !!(n.credentials || {}).mailchimpApi));
+check('all three retry on failure', [fetch, rm, add].every((n) => n.retryOnFail === true));
+check('all three continue on error', [fetch, rm, add].every((n) => n.onError === 'continueRegularOutput'));
+check('loop batch size is 1', byName['Loop Over Members'].parameters.batchSize === 1);
 
 console.log('\nEXPRESSIONS');
-check('remove reads tagsToRemove from the current item',
+check('remove reads the diff item directly',
   rm.parameters.tags === '={{ $json.tagsToRemove }}' && rm.parameters.email === '={{ $json.email }}');
-// the add node must not read $json: after a failed remove that item is an error object
+// after a failed remove the item on the wire is an error object with no tags
 check('add does NOT read $json (immune to a failed remove)',
   !add.parameters.tags.includes('$json.') && !add.parameters.email.includes('$json.'));
-check('add reads branch 1 (the loop output) of Loop Over Items',
-  add.parameters.tags === "={{ $('Loop Over Items').first(1).json.tagsToAdd }}" &&
-  add.parameters.email === "={{ $('Loop Over Items').first(1).json.email }}");
+check('add reads back from Diff Tags',
+  add.parameters.tags === "={{ $('Diff Tags').first(0).json.tagsToAdd }}");
+check('second IF also reads back from Diff Tags',
+  byName['Has New Tags?'].parameters.conditions.conditions[0].leftValue === "={{ $('Diff Tags').first(0).json.hasAdds }}");
+check('diff reads the desired state from the loop branch (1)',
+  byName['Diff Tags'].parameters.jsCode.includes("$('Loop Over Members').first(1)"));
 
 const refs = new Set();
-for (const n of wf.nodes) {
-  const s = JSON.stringify(n.parameters);
-  for (const m of s.matchAll(/\$\('([^']+)'\)/g)) refs.add(m[1]);
-}
-check('every $(\'node\') reference resolves', [...refs].every((r) => byName[r]), [...refs].join(', '));
+for (const n of wf.nodes) for (const m of JSON.stringify(n.parameters).matchAll(/\$\('([^']+)'\)/g)) refs.add(m[1]);
+check("every $('node') reference resolves", [...refs].every((r) => byName[r]), [...refs].join(', '));
 
 console.log(`\n  ${failed ? failed + ' check(s) FAILED' : 'all checks passed'}\n`);
 process.exit(failed ? 1 : 0);

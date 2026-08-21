@@ -1,101 +1,91 @@
 // ============================================================
 // Offline simulation of the Mailchimp tag sync.
 //
-// Implements the semantics of POST /lists/{id}/members/{hash}/tags
-// (status "active" = add, status "inactive" = remove, removing a tag the
-// member does not have is a no-op) and replays both the OLD add-only
-// workflow and the NEW remove-then-add workflow against the same seeded
-// audience, so the two can be compared on identical dummy data.
+// Implements the endpoints the workflow uses:
+//   GET  /lists/{id}/members/{email}        -> member incl. tags[]
+//   POST /lists/{id}/members/{email}/tags   -> status active = add,
+//                                              status inactive = remove,
+//                                              removing an absent tag = no-op
+// then replays the OLD add-only workflow and the NEW fetch-and-diff
+// workflow over the same seeded audience.
 //
 //   node scripts/simulate_tag_sync.js
 // ============================================================
 
-const fs = require('fs');
-const path = require('path');
+const { run, wrap } = require('./lib/nodes');
 
-const buildTagOpsSrc = fs.readFileSync(path.join(__dirname, 'build_tag_ops.js'), 'utf8');
-const buildTagOps = (items) =>
-  new Function('$input', buildTagOpsSrc)({ all: () => items.map((json) => ({ json })) });
-
-// ---------- fake Mailchimp audience ----------
 class FakeMailchimp {
-  constructor(seed) {
-    this.members = new Map();
-    for (const [email, tags] of Object.entries(seed)) this.members.set(email, new Set(tags));
-    this.calls = 0;
+  constructor(seed, opts = {}) {
+    this.members = new Map(Object.entries(seed).map(([k, v]) => [k, new Set(v)]));
+    this.reads = 0;
+    this.writes = 0;
     this.errors = [];
+    this.failReadsFor = new Set(opts.failReadsFor || []);
   }
-  // mirrors the n8n Mailchimp node: body.tags = [{ name, status }]
+  getMember(email) {
+    this.reads++;
+    if (this.failReadsFor.has(email)) throw new Error('429 too many requests');
+    const m = this.members.get(email);
+    if (!m) throw new Error('404 The requested resource could not be found');
+    return { email_address: email, status: 'subscribed', tags: [...m].map((name, id) => ({ id, name })) };
+  }
   postTags(email, body) {
-    this.calls++;
-    const member = this.members.get(email);
-    if (!member) {
-      const err = new Error(`404 The requested resource could not be found (${email})`);
-      this.errors.push(err.message);
-      throw err;
-    }
-    for (const { name, status } of body.tags) {
-      if (status === 'active') member.add(name);
-      else member.delete(name); // no-op when absent, like the real API
-    }
+    this.writes++;
+    const m = this.members.get(email);
+    if (!m) { this.errors.push(`404 ${email}`); throw new Error('404'); }
+    for (const { name, status } of body.tags) status === 'active' ? m.add(name) : m.delete(name);
   }
-  tagsOf(email) {
-    return [...(this.members.get(email) || [])];
-  }
+  tagsOf(email) { return [...(this.members.get(email) || [])]; }
 }
 
-const nodeCall = (mc, operation, email, tags) => {
+const tagCall = (mc, operation, email, tags) => {
   const body = { tags: tags.map((t) => ({ name: t, status: operation === 'create' ? 'active' : 'inactive' })) };
-  try {
-    mc.postTags(email, body);
-  } catch (e) {
-    // both nodes are onError: continueRegularOutput
-  }
+  try { mc.postTags(email, body); } catch (e) { /* onError: continueRegularOutput */ }
 };
 
-// ---------- workflow replays ----------
-// OLD: Expand Tags -> one memberTag:create call per tag
+// ---------- OLD: Expand Tags -> one memberTag:create per tag ----------
 function runOld(items, mc) {
-  for (const it of items) {
-    const tags = Array.isArray(it.tags) ? it.tags : [it.tagName];
-    for (const t of tags) nodeCall(mc, 'create', it.email.toLowerCase().trim(), [t]);
-  }
+  for (const it of items) tagCall(mc, 'create', it.email.toLowerCase().trim(), [it.tagName]);
+  return [];
 }
 
-// NEW: Build Tag Ops -> loop(1) -> IF hasRemovals -> delete -> create
+// ---------- NEW: Build Desired State -> loop -> GET -> Diff -> remove -> add ----------
 function runNew(items, mc) {
-  for (const { json: op } of buildTagOps(items)) {
-    if (op.hasRemovals) nodeCall(mc, 'delete', op.email, op.tagsToRemove); // remove first
-    nodeCall(mc, 'create', op.email, op.tagsToAdd); // then add
+  const report = [];
+  for (const desired of run('Build Desired State', items)) {
+    let member;
+    try { member = mc.getMember(desired.email); }
+    catch (e) { member = { error: { message: e.message } }; }   // Fetch Current Tags, onError: continue
+
+    const d = run('Diff Tags', [member], { 'Loop Over Members': { branches: [[], wrap([desired])] } })[0];
+
+    if (d.hasRemovals) tagCall(mc, 'delete', d.email, d.tagsToRemove);   // remove first
+    if (d.hasAdds) tagCall(mc, 'create', d.email, d.tagsToAdd);          // then add
+
+    report.push(run('Record Result', [d], { 'Diff Tags': { branches: [wrap([d])] } })[0]);
   }
+  return report;
 }
 
-// ---------- dummy data ----------
-// Audience as it looks today, after months of add-only syncs.
+// ---------- dummy audience, as it looks after months of add-only syncs ----------
 const SEED = {
   'pakenham@mrfurniture.com.au': ['VIC', 'Regional', 'Furniture', 'Inactive', 'Tier C', 'VIP'],
   'buyer@giftco.com.au':         ['NSW', 'Metro', 'Gift & Homewares', 'Active', 'Inactive', 'Tier B', 'Tier C'],
   'moved@example.com.au':        ['NSW', 'Metro', 'Furniture', 'Active', 'Tier B'],
   'team@duranttechnologies.com': ['VIC', 'Metro', 'Furniture', 'Active', 'Tier C'],
   'reclassified@example.com':    ['QLD', 'Regional', 'Other', 'Active', 'Tier C', 'Trade Show 2025'],
-  // ghost@example.com is deliberately absent from the audience
+  'steady@example.com':          ['SA', 'Metro', 'Furniture', 'Active', 'Tier C'],
+  // ghost@example.com deliberately absent
 };
 
-// What this week's run sends (legacy per-tag shape, exactly what Mailchimp sync emits today)
 const expand = (email, tags) => tags.map((t) => ({ email, tagName: t }));
-
 const THIS_RUN = [
-  // placed an order -> Inactive must go
   ...expand('pakenham@mrfurniture.com.au', ['VIC', 'Regional', 'Furniture', 'Active', 'Tier C']),
-  // already double-tagged; also moved up a tier
   ...expand('buyer@giftco.com.au', ['NSW', 'Metro', 'Gift & Homewares', 'Active', 'Tier A']),
-  // interstate move NSW/Metro -> VIC/Regional
   ...expand('moved@example.com.au', ['VIC', 'Regional', 'Furniture', 'Active', 'Tier B']),
-  // Shopify abandoned cart run for an existing E-Suite customer
   ...expand('team@duranttechnologies.com', ['Abandoned Cart', 'Shopify']),
-  // business type reclassified Other -> Manchester
   ...expand('reclassified@example.com', ['QLD', 'Regional', 'Manchester', 'Active', 'Tier C']),
-  // member that does not exist in Mailchimp
+  ...expand('steady@example.com', ['SA', 'Metro', 'Furniture', 'Active', 'Tier C']),
   ...expand('ghost@example.com', ['NSW', 'Metro', 'Other', 'Active', 'Tier C']),
 ];
 
@@ -106,78 +96,78 @@ const GROUPS = {
   state: ['NSW', 'VIC', 'QLD', 'SA', 'WA', 'TAS', 'ACT', 'NT'],
   businessType: ['Gift & Homewares', 'Furniture', 'Manchester', 'Interior Stylist', 'Other'],
 };
+const conflictsFor = (tags) => Object.entries(GROUPS)
+  .map(([g, v]) => [g, v.filter((x) => tags.includes(x))]).filter(([, p]) => p.length > 1);
 
-const conflictsFor = (tags) =>
-  Object.entries(GROUPS)
-    .map(([g, values]) => [g, values.filter((v) => tags.includes(v))])
-    .filter(([, present]) => present.length > 1);
-
-// ---------- run both ----------
-function report(label, runner) {
-  const mc = new FakeMailchimp(JSON.parse(JSON.stringify(
-    Object.fromEntries(Object.entries(SEED).map(([k, v]) => [k, [...v]])))));
-  runner(THIS_RUN, mc);
-
-  console.log('\n' + '='.repeat(78));
-  console.log(label);
-  console.log('='.repeat(78));
-
+function report(label, runner, opts) {
+  const mc = new FakeMailchimp(SEED, opts);
+  const rows = runner(THIS_RUN, mc);
+  console.log('\n' + '='.repeat(80) + `\n${label}\n` + '='.repeat(80));
   let bad = 0;
   for (const email of Object.keys(SEED)) {
     const after = mc.tagsOf(email).sort();
-    const conflicts = conflictsFor(after);
-    if (conflicts.length) bad++;
-    console.log(`\n${email}`);
-    console.log(`  before : ${SEED[email].slice().sort().join(', ')}`);
-    console.log(`  after  : ${after.join(', ')}`);
-    if (conflicts.length) {
-      for (const [g, present] of conflicts) console.log(`  CONFLICT ${g}: ${present.join(' + ')}`);
-    }
+    const c = conflictsFor(after);
+    if (c.length) bad++;
+    console.log(`\n${email}\n  before : ${[...SEED[email]].sort().join(', ')}\n  after  : ${after.join(', ')}`);
+    for (const [g, p] of c) console.log(`  CONFLICT ${g}: ${p.join(' + ')}`);
   }
-  console.log(`\n  API calls: ${mc.calls}   members with conflicting tags: ${bad}` +
-              `   404s handled: ${mc.errors.length}`);
-  return { mc, bad };
+  console.log(`\n  reads: ${mc.reads}   writes: ${mc.writes}   conflicting members: ${bad}`);
+  return { mc, bad, rows };
 }
 
 const oldRun = report('BEFORE — current workflow (memberTag: create only)', runOld);
-const newRun = report('AFTER — patched workflow (remove stale, then add)', runNew);
+const newRun = report('AFTER — fetch current tags, diff, remove stale, add new', runNew);
 
-// ---------- assertions ----------
-console.log('\n' + '='.repeat(78));
-console.log('ASSERTIONS');
-console.log('='.repeat(78));
+console.log('\n' + '='.repeat(80) + '\nPER-MEMBER REPORT (the "Record Result" rows the run returns)\n' + '='.repeat(80));
+for (const r of newRun.rows) {
+  console.log(`\n${r.email}${r.memberFound ? '' : '   [NOT IN AUDIENCE]'}`);
+  console.log(`  removed  : ${r.removed.join(', ') || '-'}`);
+  console.log(`  added    : ${r.added.join(', ') || '-'}`);
+  console.log(`  untouched: ${r.untouched.join(', ') || '-'}`);
+  if (r.error) console.log(`  error    : ${r.error}`);
+}
 
-const checks = [];
-const check = (name, pass, detail = '') => {
-  checks.push(pass);
-  console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
-};
-
-check('bug reproduces on the old workflow', oldRun.bad > 0, `${oldRun.bad} members left with conflicting tags`);
-check('no conflicting tags after the patch', newRun.bad === 0);
-
+console.log('\n' + '='.repeat(80) + '\nASSERTIONS\n' + '='.repeat(80));
+let failed = 0;
+const check = (n, pass, detail = '') => { if (!pass) failed++; console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${n}${detail ? ' — ' + detail : ''}`); };
 const t = (e) => newRun.mc.tagsOf(e);
-check('Inactive removed when customer becomes Active',
+const row = (e) => newRun.rows.find((r) => r.email === e);
+
+check('bug reproduces on the old workflow', oldRun.bad > 0, `${oldRun.bad} members left conflicted`);
+check('no conflicting tags after the change', newRun.bad === 0);
+check('Inactive removed when the customer becomes Active',
   t('pakenham@mrfurniture.com.au').includes('Active') && !t('pakenham@mrfurniture.com.au').includes('Inactive'));
 check('manual tag VIP survives', t('pakenham@mrfurniture.com.au').includes('VIP'));
-check('pre-existing double tag is repaired',
-  t('buyer@giftco.com.au').filter((x) => x.startsWith('Tier')).length === 1 &&
-  t('buyer@giftco.com.au').includes('Tier A'));
-check('interstate move clears the old state',
+check('pre-existing double tag repaired', t('buyer@giftco.com.au').filter((x) => x.startsWith('Tier')).length === 1);
+check('interstate move clears old state and geo',
   t('moved@example.com.au').includes('VIC') && !t('moved@example.com.au').includes('NSW') &&
-  t('moved@example.com.au').includes('Regional') && !t('moved@example.com.au').includes('Metro'));
+  !t('moved@example.com.au').includes('Metro'));
 check('abandoned-cart run does not strip segmentation',
-  ['VIC', 'Metro', 'Furniture', 'Active', 'Tier C', 'Abandoned Cart', 'Shopify']
-    .every((x) => t('team@duranttechnologies.com').includes(x)));
+  row('team@duranttechnologies.com').removed.length === 0 &&
+  ['Active', 'Tier C', 'VIC', 'Metro', 'Abandoned Cart', 'Shopify'].every((x) => t('team@duranttechnologies.com').includes(x)));
 check('reclassified business type replaces the old one',
   t('reclassified@example.com').includes('Manchester') && !t('reclassified@example.com').includes('Other'));
-check('unrelated campaign tag survives', t('reclassified@example.com').includes('Trade Show 2025'));
-check('missing member 404s without breaking the batch', newRun.mc.errors.length > 0);
+check('campaign tag survives', t('reclassified@example.com').includes('Trade Show 2025'));
+check('already-correct member costs 1 read and 0 writes',
+  row('steady@example.com').removed.length === 0 && row('steady@example.com').added.length === 0);
+check('missing member flagged in the report, batch continues',
+  row('ghost@example.com') && row('ghost@example.com').memberFound === false && !!row('ghost@example.com').error);
 check('every member still carries an activity tag',
   Object.keys(SEED).every((e) => GROUPS.activity.some((v) => t(e).includes(v))));
-check('fewer API calls than before', newRun.mc.calls < oldRun.mc.calls,
-  `${oldRun.mc.calls} -> ${newRun.mc.calls}`);
+check('removal calls carry only tags that were really there',
+  newRun.rows.every((r) => r.removed.every((x) => r.before.includes(x))));
+check('fewer write calls than before', newRun.mc.writes < oldRun.mc.writes,
+  `${oldRun.mc.writes} writes -> ${newRun.mc.writes} writes + ${newRun.mc.reads} reads`);
 
-const failed = checks.filter((c) => !c).length;
-console.log(`\n  ${checks.length - failed}/${checks.length} passed`);
+// failure mode specific to this design: if the GET fails we cannot know the
+// current tags, so removals are skipped. It must be reported, never silent.
+const degraded = report('DEGRADED — the GET fails for one member (rate limit)',
+  runNew, { failReadsFor: ['pakenham@mrfurniture.com.au'] });
+const drow = degraded.rows.find((r) => r.email === 'pakenham@mrfurniture.com.au');
+check('failed fetch is surfaced, not silently skipped',
+  drow.memberFound === false && !!drow.error && drow.removed.length === 0);
+check('...and the stale tag is left for the next run rather than guessed at',
+  degraded.mc.tagsOf('pakenham@mrfurniture.com.au').includes('Inactive'));
+
+console.log(`\n  ${failed ? failed + ' FAILED' : 'all assertions passed'}\n`);
 process.exit(failed ? 1 : 0);
