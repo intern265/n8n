@@ -53,6 +53,39 @@ Reading first buys four things a blind remove-then-add cannot give you:
 4. **Anomalies surface**: members missing from the audience, and tags that are
    right but stored with different casing.
 
+### Who writes which tags (verified against the workflow JSON + README)
+
+| Tag | Written by | Ever removed? |
+|---|---|---|
+| `NSW`/`VIC`/... , `Metro`/`Regional`, business type, `Active`/`Inactive`, `Tier A/B/C` | Workflow 1, E-Suite SQL segmentation | Only by this change |
+| `Abandoned Cart`, `Shopify` | Workflow 2, Shopify Abandoned Carts (README:99, 244) | **No — nothing removes them** |
+| `Draft-Fieldfolio`, `Fieldfolio` | Workflow 3, Fieldfolio Draft Orders (README:115, 246) | **No — nothing removes them** |
+| Manual tags (`VIP`, campaign tags) | Applied by hand in the Mailchimp UI | No |
+
+All three source workflows call the same `Mailchimp Sync` sub-workflow
+(README:131), which hardcodes no tag names at all — `Prep Mailchimp Payload` and
+`Expand Tags` both just read `d.tags` from whatever the caller passed. The tags
+then reach `mailchimp tags update` as identical `{ email, tagName }` items with
+**no marker saying which source they came from**.
+
+That is exactly why removal has to be bounded by a declared vocabulary rather
+than by "what is in the master sheet": at the point of the write, the workflow
+cannot tell an abandoned-cart tag from a segmentation tag except by name.
+
+Confirmed by inspection: the only tag operation anywhere in the current system is
+`memberTag` with the default `create`. The sole delete is `Mailchimp delete`,
+which removes the **whole contact**, not a tag.
+
+### Stale README entries for workflow 4
+
+The README describes `Mailchimp Sync` as it used to be, not as it runs:
+
+| README says | Actually |
+|---|---|
+| list `0b326f5891` | `0d435a9df3` |
+| "Loops in batches of 10" | `batchSize` unset, so splitInBatches v3 defaults to **1** |
+| "Routes via Switch node: abandoned → `Create a member tag-abandoned1`, others → `Create a member tag-non-abandoned`" | No Switch node exists. It is `Expand Tags` → `Execute Workflow` → `mailchimp tags update` |
+
 ### Scope rule — the part the diff alone does not give you
 
 "Remove everything on the member that is not in the master sheet" would delete
