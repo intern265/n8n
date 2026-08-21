@@ -61,6 +61,13 @@ check('remove reads the diff item directly',
 // after a failed remove the item on the wire is an error object with no tags
 check('add does NOT read $json (immune to a failed remove)',
   !add.parameters.tags.includes('$json.') && !add.parameters.email.includes('$json.'));
+// A multi-value field bound to an array expression must be stored as a BARE
+// string. If the n8n UI rewraps it as ["={{ ... }}"], the node sends
+// { name: ["Tier B","Inactive"] } and Mailchimp answers 400 Bad Request.
+check('remove tags param is a bare expression, not a wrapped list entry',
+  typeof rm.parameters.tags === 'string', JSON.stringify(rm.parameters.tags));
+check('add tags param is a bare expression, not a wrapped list entry',
+  typeof add.parameters.tags === 'string', JSON.stringify(add.parameters.tags));
 check('add reads back from Diff Tags',
   add.parameters.tags === "={{ $('Diff Tags').first(0).json.tagsToAdd }}");
 check('second IF also reads back from Diff Tags',

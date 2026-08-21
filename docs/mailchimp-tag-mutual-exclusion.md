@@ -146,6 +146,35 @@ Two implementation details that matter:
   so a 404 produces an item (flagged `memberFound: false`) instead of stalling
   the chain, and the response stays small.
 
+## Gotcha: the Tags field must hold a bare expression
+
+`tags` is a multi-value field. The workflow binds the **whole parameter** to an
+expression returning an array:
+
+```json
+"tags": "={{ $json.tagsToRemove }}"
+```
+
+If it is instead stored as a list with one entry containing that expression —
+which is what the n8n UI produces if you click *Add Tag* and paste the
+expression into the row — the node receives `[["Tier B","Inactive"]]` and builds:
+
+```json
+{"tags":[{"name":["Tier B","Inactive"],"status":"inactive"}]}
+```
+
+`name` is an array, so Mailchimp answers **400 Bad request - please check your
+parameters**. Both write nodes are affected identically; the add node just fails
+later, because it is skipped whenever `tagsToAdd` is empty.
+
+To check: select the node, Ctrl+C, paste into a text editor and look at whether
+`"tags"` is a string or an array. `scripts/validate_workflow.js` asserts this.
+
+If the editor keeps rewrapping the field, fan the writes out to one tag per item
+instead — each row then holds a plain `{{ $json.tagName }}`, the same shape the
+original workflow used. With fetch-and-diff the removal list is usually one or
+two tags, so the extra calls are cheap.
+
 ## Edge cases
 
 | # | Edge case | Effect | Handling |
