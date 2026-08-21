@@ -30,8 +30,9 @@ check('stale true (0) -> Remove Stale Tags', out('Has Stale Tags?', 0).includes(
 check('stale false (1) skips straight to Has New Tags?', out('Has Stale Tags?', 1).includes('Has New Tags?'));
 check('REMOVE RUNS BEFORE ADD', out('Remove Stale Tags', 0).includes('Has New Tags?'));
 check('new true (0) -> Add New Tags', out('Has New Tags?', 0).includes('Add New Tags'));
-check('new false (1) -> Record Result (no wasted call)', out('Has New Tags?', 1).includes('Record Result'));
-check('Add New Tags -> Record Result', out('Add New Tags', 0).includes('Record Result'));
+check('new false (1) still verifies', out('Has New Tags?', 1).includes('Verify Tags'));
+check('Add New Tags -> Verify Tags', out('Add New Tags', 0).includes('Verify Tags'));
+check('VERIFY RUNS AFTER THE WRITES', out('Verify Tags', 0).includes('Record Result'));
 check('Record Result closes the loop', out('Record Result', 0).includes('Loop Over Members'));
 check('error trigger -> Gmail', out('Error Trigger', 0).includes('Send a message'));
 
@@ -39,6 +40,7 @@ console.log('\nNODE CONFIG');
 const fetch = byName['Fetch Current Tags'];
 const rm = byName['Remove Stale Tags'];
 const add = byName['Add New Tags'];
+const verify = byName['Verify Tags'];
 check('fetch node reads the member (GET /members/{email})',
   fetch.parameters.resource === 'member' && fetch.parameters.operation === 'get');
 check('fetch asks for the tags field', String(fetch.parameters.options.fields).includes('tags'));
@@ -47,12 +49,16 @@ check('remove uses memberTag:delete (status inactive)',
   rm.parameters.resource === 'memberTag' && rm.parameters.operation === 'delete');
 check('add uses memberTag:create (node default = status active)',
   add.parameters.resource === 'memberTag' && !add.parameters.operation);
-check('all three target the same audience',
-  fetch.parameters.list === rm.parameters.list && rm.parameters.list === add.parameters.list, rm.parameters.list);
-check('all three carry the Mailchimp credential',
-  [fetch, rm, add].every((n) => !!(n.credentials || {}).mailchimpApi));
-check('all three retry on failure', [fetch, rm, add].every((n) => n.retryOnFail === true));
-check('all three continue on error', [fetch, rm, add].every((n) => n.onError === 'continueRegularOutput'));
+check('ALL FOUR NODES TARGET THE SAME AUDIENCE',
+  new Set([fetch, rm, add, verify].map((n) => n.parameters.list)).size === 1,
+  [...new Set([fetch, rm, add, verify].map((n) => n.parameters.list))].join(' vs '));
+check('all four carry the Mailchimp credential',
+  [fetch, rm, add, verify].every((n) => !!(n.credentials || {}).mailchimpApi));
+check('all four retry on failure', [fetch, rm, add, verify].every((n) => n.retryOnFail === true));
+check('all four continue on error', [fetch, rm, add, verify].every((n) => n.onError === 'continueRegularOutput'));
+check('verify re-reads the member', verify.parameters.resource === 'member' && verify.parameters.operation === 'get');
+check('Record Result asserts against the re-read',
+  byName['Record Result'].parameters.jsCode.includes('stillPresent'));
 check('loop batch size is 1', byName['Loop Over Members'].parameters.batchSize === 1);
 
 console.log('\nEXPRESSIONS');

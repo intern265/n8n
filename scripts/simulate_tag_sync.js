@@ -62,7 +62,10 @@ function runNew(items, mc) {
     if (d.hasRemovals) tagCall(mc, 'delete', d.email, d.tagsToRemove);   // remove first
     if (d.hasAdds) tagCall(mc, 'create', d.email, d.tagsToAdd);          // then add
 
-    report.push(run('Record Result', [d], { 'Diff Tags': { branches: [wrap([d])] } })[0]);
+    let after;                                                          // Verify Tags
+    try { after = mc.getMember(d.email); }
+    catch (e) { after = { error: { message: e.message } }; }
+    report.push(run('Record Result', [after], { 'Diff Tags': { branches: [wrap([d])] } })[0]);
   }
   return report;
 }
@@ -156,6 +159,10 @@ check('every member still carries an activity tag',
   Object.keys(SEED).every((e) => GROUPS.activity.some((v) => t(e).includes(v))));
 check('removal calls carry only tags that were really there',
   newRun.rows.every((r) => r.removed.every((x) => r.before.includes(x))));
+check('every member verified against a re-read of Mailchimp',
+  newRun.rows.filter((r) => r.memberFound).every((r) => r.verified === true));
+check('nothing left behind that we asked to remove',
+  newRun.rows.every((r) => r.stillPresent.length === 0));
 check('fewer write calls than before', newRun.mc.writes < oldRun.mc.writes,
   `${oldRun.mc.writes} writes -> ${newRun.mc.writes} writes + ${newRun.mc.reads} reads`);
 

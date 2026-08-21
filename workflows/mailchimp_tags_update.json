@@ -206,12 +206,12 @@
     },
     {
       "parameters": {
-        "jsCode": "// One row per member describing what actually happened, fed back into the\n// loop so the \"done\" branch can return the whole run as a report.\nconst d = $('Diff Tags').first(0).json;\nconst input = $input.first().json || {};\n\nreturn [{\n  json: {\n    email: d.email,\n    memberFound: d.memberFound,\n    before: d.currentTags,\n    removed: d.tagsToRemove,\n    added: d.tagsToAdd,\n    after: d.expectedAfter,\n    untouched: d.untouched,\n    casingDrift: d.casingDrift,\n    conflicts: d.conflicts,\n    error: d.fetchError || (input.error ? String(input.error.message || input.error) : null),\n    syncedAt: new Date().toISOString(),\n  },\n}];\n"
+        "jsCode": "// Compares what Mailchimp ACTUALLY holds after the writes against what we\n// asked for. The Mailchimp node hardcodes `{ success: true }` after every\n// call, so its output only means \"no HTTP error\" — it is not evidence that\n// anything changed. This node is that evidence.\nconst d = $('Diff Tags').first(0).json;\nconst verify = $input.first().json || {};\n\nconst actualTags = Array.isArray(verify.tags)\n  ? verify.tags.map((t) => t && t.name).filter(Boolean)\n  : null;\n\nlet verified = null;\nlet stillPresent = [];\nlet missing = [];\n\nif (actualTags) {\n  const actualLc = new Set(actualTags.map((t) => t.toLowerCase()));\n  // asked to be removed, but Mailchimp still has it\n  stillPresent = d.tagsToRemove.filter((t) => actualLc.has(t.toLowerCase()));\n  // asked to be added, but Mailchimp does not have it\n  missing = d.tagsToAdd.filter((t) => !actualLc.has(t.toLowerCase()));\n  verified = stillPresent.length === 0 && missing.length === 0;\n}\n\nreturn [{\n  json: {\n    email: d.email,\n    memberFound: d.memberFound,\n    before: d.currentTags,\n    removed: d.tagsToRemove,\n    added: d.tagsToAdd,\n    after: actualTags,\n    verified,\n    stillPresent,\n    missing,\n    untouched: d.untouched,\n    casingDrift: d.casingDrift,\n    conflicts: d.conflicts,\n    error: d.fetchError\n      || (verify.error ? String(verify.error.message || verify.error) : null)\n      || (stillPresent.length ? `Mailchimp accepted the call but did not remove: ${stillPresent.join(', ')}` : null)\n      || (missing.length ? `Mailchimp accepted the call but did not add: ${missing.join(', ')}` : null),\n    syncedAt: new Date().toISOString(),\n  },\n}];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1840,
+        2060,
         512
       ],
       "id": "6c7d8e9f-0a1b-42c3-94d5-e6f7a8b9c0d1",
@@ -266,6 +266,35 @@
       ],
       "id": "2801b86c-a9ae-43f1-9d94-78fd6024eab5",
       "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "resource": "member",
+        "operation": "get",
+        "list": "0d435a9df3",
+        "email": "={{ $('Diff Tags').first(0).json.email }}",
+        "options": {
+          "fields": "email_address,status,tags"
+        }
+      },
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [
+        1840,
+        416
+      ],
+      "id": "7d8e9f0a-1b2c-43d4-a5e6-f7a8b9c0d1e2",
+      "name": "Verify Tags",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "mailchimpApi": {
+          "id": "fwuYrbbxnMVpdwa7",
+          "name": "J-Elliot-marketing"
+        }
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "pinData": {
@@ -429,7 +458,7 @@
         ],
         [
           {
-            "node": "Record Result",
+            "node": "Verify Tags",
             "type": "main",
             "index": 0
           }
@@ -440,7 +469,7 @@
       "main": [
         [
           {
-            "node": "Record Result",
+            "node": "Verify Tags",
             "type": "main",
             "index": 0
           }
@@ -463,6 +492,17 @@
         [
           {
             "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Tags": {
+      "main": [
+        [
+          {
+            "node": "Record Result",
             "type": "main",
             "index": 0
           }
