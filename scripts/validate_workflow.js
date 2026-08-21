@@ -52,9 +52,16 @@ check('add uses memberTag:create (node default = status active)',
 check('ALL FOUR NODES TARGET THE SAME AUDIENCE',
   new Set([fetch, rm, add, verify].map((n) => n.parameters.list)).size === 1,
   [...new Set([fetch, rm, add, verify].map((n) => n.parameters.list))].join(' vs '));
+check('verify node is off by default (no extra API calls)', verify.disabled === true);
+check('ALL FOUR NODES USE THE SAME CREDENTIAL',
+  new Set([fetch, rm, add, verify].map((n) => n.credentials.mailchimpApi.name)).size === 1,
+  [...new Set([fetch, rm, add, verify].map((n) => n.credentials.mailchimpApi.name))].join(' vs '));
 check('all four carry the Mailchimp credential',
   [fetch, rm, add, verify].every((n) => !!(n.credentials || {}).mailchimpApi));
 check('all four retry on failure', [fetch, rm, add, verify].every((n) => n.retryOnFail === true));
+check('no node carries pinned data (stale test data reads as real state)',
+  !Object.keys(wf.pinData || {}).some((k) => k !== 'When Executed by Another Workflow'),
+  Object.keys(wf.pinData || {}).join(', '));
 check('all four continue on error', [fetch, rm, add, verify].every((n) => n.onError === 'continueRegularOutput'));
 check('verify re-reads the member', verify.parameters.resource === 'member' && verify.parameters.operation === 'get');
 check('Record Result asserts against the re-read',

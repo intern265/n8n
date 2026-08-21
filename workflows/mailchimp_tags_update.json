@@ -294,7 +294,10 @@
           "name": "J-Elliot-marketing"
         }
       },
-      "onError": "continueRegularOutput"
+      "onError": "continueRegularOutput",
+      "disabled": true,
+      "notes": "Enable only when you need proof of what Mailchimp actually did. Disabled = passthrough.",
+      "notesInFlow": true
     }
   ],
   "pinData": {
