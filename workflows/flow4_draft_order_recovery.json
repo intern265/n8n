@@ -1,0 +1,376 @@
+{
+  "name": "Flow 4 - Fieldfolio Draft Order Recovery",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -240,
+        272
+      ],
+      "id": "057a8d3b-0dd4-4eee-8597-b965892f472f",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize the item shape from the caller and stamp flow constants.\nconst EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst FLOW = 'Fieldfolio Draft Recovery';\nconst RECOVERY_TAG = 'Draft-Fieldfolio-Recovery';\nconst today = new Date().toISOString().slice(0, 10);\n\nreturn $input.all().map((it) => {\n  const j = it.json || {};\n  const email = String(j.email || '').trim().toLowerCase();\n  const accountName = String(j.accountName || j.businessName || '').trim();\n  return { json: {\n    accountNo: String(j.accountNo || '').trim(),\n    accountName,\n    businessName: String(j.businessName || accountName).trim(),\n    email,\n    emailValid: !!email && EMAIL_RE.test(email),\n    source: j.source || 'fieldfolio_draft_order',\n    sourceEmailId: String(j.sourceEmailId || '').trim(),\n    draftOrderDate: j.draftOrderDate || today,\n    flow: FLOW,\n    recoveryTag: RECOVERY_TAG,\n  } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        272
+      ],
+      "id": "2da2bb0e-d1dc-4abf-a459-2b30d5b1f074",
+      "name": "Normalize Customer"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_TRACKER_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Fieldfolio Draft Recovery",
+          "mode": "name"
+        },
+        "operation": "read",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        208,
+        272
+      ],
+      "id": "85b62562-44f1-4bf3-88a8-b6d0ab6ce194",
+      "name": "Read Engagement Tracker",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_SHEETS_CRED_ID",
+          "name": "COndy"
+        }
+      },
+      "notesInFlow": true,
+      "notes": "One bulk read per run. Filter/index in Decide Action."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Index tracker rows by lowercased email (scoped to this flow),\n// then classify every input customer: start or skip (with reason).\nconst flow = 'Fieldfolio Draft Recovery';\nconst trackerRows = $('Read Engagement Tracker').all().map((r) => r.json || {});\n\nconst idx = new Map();\nfor (const r of trackerRows) {\n  const email = String(r.Email || r.email || '').trim().toLowerCase();\n  if (!email) continue;\n  const rowFlow = String(r.Flow || '').trim();\n  if (rowFlow && rowFlow !== flow) continue;\n  const prev = idx.get(email);\n  const status = String(r.Status || '').trim();\n  // Active wins; otherwise last-write-wins as a fallback.\n  if (!prev || status === 'Active') idx.set(email, r);\n}\n\nconst items = $input.all();\nreturn items.map((it) => {\n  const c = { ...it.json };\n  c._action = 'start';\n  c._reason = 'new-customer';\n  if (!c.emailValid) {\n    c._action = 'skip'; c._reason = 'invalid-email';\n    return { json: c };\n  }\n  const existing = idx.get(c.email);\n  if (existing) {\n    const st = String(existing.Status || '').trim();\n    if (st === 'Active')       { c._action = 'skip'; c._reason = 'already-active'; }\n    else if (st === 'Converted')    { c._action = 'skip'; c._reason = 'already-converted'; }\n    else if (st === 'Unresponsive') { c._action = 'skip'; c._reason = 'previously-unresponsive'; }\n    else if (st === 'Escalated')    { c._action = 'skip'; c._reason = 'previously-escalated'; }\n    // Any other/blank status falls through to 'start'.\n  }\n  return { json: c };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        272
+      ],
+      "id": "abf77875-1586-4ff0-b9b6-840e652c45da",
+      "name": "Decide Action"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ebeebb5c-2f11-4dd0-a333-3e800369bc6f",
+              "leftValue": "={{ $json._action }}",
+              "rightValue": "start",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        656,
+        272
+      ],
+      "id": "fa3df65d-2948-4174-9ea7-9381d6b71312",
+      "name": "Should Start?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shape input for the `mailchimp tags update` sub-workflow.\n// It accepts { email, tags: [...] } and reconciles the member's tags.\nreturn $input.all().map((it) => {\n  const c = it.json;\n  return { json: {\n    email: c.email,\n    tags: [c.recoveryTag],\n    accountName: c.accountName,\n    accountNo: c.accountNo,\n    source: c.source,\n  } };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        176
+      ],
+      "id": "d7c810c4-2e4f-4a0f-a39e-55885afda4ee",
+      "name": "Prepare Tag Payload"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "m8Q7MdDVuhUrLqj2",
+          "mode": "list",
+          "cachedResultName": "mailchimp tags update"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1104,
+        176
+      ],
+      "id": "2731c54a-a989-4005-b352-e302cfcc25f7",
+      "name": "Add Recovery Tag via Sync"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build tracker rows for every customer we actually started recovery for.\n// Reads from Decide Action so it is immune to the sub-workflow's output shape.\nconst now = new Date().toISOString();\nconst starts = $('Decide Action').all()\n  .filter((it) => it.json._action === 'start')\n  .map((it) => {\n    const c = it.json;\n    return { json: {\n      AccountNo: c.accountNo,\n      AccountName: c.accountName,\n      Email: c.email,\n      Flow: c.flow,\n      Step: 1,\n      Status: 'Active',\n      LastEmailSent: now,\n      LastOrderDate: c.draftOrderDate,\n      RecoveryStartedAt: now,\n      RecoveryCompletedAt: '',\n      Source: 'Fieldfolio',\n      SourceEmailId: c.sourceEmailId,\n      UpdatedAt: now,\n    } };\n  });\nreturn starts.length ? starts : [{ json: { _empty: true } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        176
+      ],
+      "id": "46c193da-79f4-4080-8753-db76a4acca3d",
+      "name": "Prepare Tracker Rows"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_TRACKER_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Fieldfolio Draft Recovery",
+          "mode": "name"
+        },
+        "operation": "append",
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1552,
+        176
+      ],
+      "id": "bb752672-abad-45dc-b812-0c16fe6b1f1b",
+      "name": "Append Tracker Row",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_SHEETS_CRED_ID",
+          "name": "COndy"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Roll up the run for observability. Nothing depends on this shape;\n// it is the workflow's return value to the caller.\nconst decisions = $('Decide Action').all().map((it) => it.json);\nconst started = decisions.filter((d) => d._action === 'start').length;\nconst skipped = decisions.length - started;\nconst skippedBy = {};\nfor (const d of decisions) {\n  if (d._action === 'start') continue;\n  skippedBy[d._reason] = (skippedBy[d._reason] || 0) + 1;\n}\nreturn [{ json: {\n  flow: 'Fieldfolio Draft Recovery',\n  total: decisions.length,\n  started,\n  skipped,\n  skippedBy,\n  at: new Date().toISOString(),\n} }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        272
+      ],
+      "id": "3ab6d3b6-9a34-4517-bd93-4157da9124b5",
+      "name": "Return Summary"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -240,
+        640
+      ],
+      "id": "35eb9b47-1b73-4d74-80e7-5f06c33981cf",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "sendTo": "tanay@zerobusy.com",
+        "subject": "=[ERROR] {{ $json.workflow.name }} failed \u2014 {{ $now.format('dd-MM-yyyy') }}",
+        "emailType": "text",
+        "message": "={{ $json.workflow.name }} failed\nLast node executed: {{ $json.execution.lastNodeExecuted }}\nExecution: {{ $json.execution.url }}\n",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -16,
+        640
+      ],
+      "id": "64f34855-9e67-4e3b-9fbb-22edb546818c",
+      "name": "Send Error Notification",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ATslW0x5iOr4fkg1",
+          "name": "j-elliot-draft-orders"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Customer": {
+      "main": [
+        [
+          {
+            "node": "Read Engagement Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Engagement Tracker": {
+      "main": [
+        [
+          {
+            "node": "Decide Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Action": {
+      "main": [
+        [
+          {
+            "node": "Should Start?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Start?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Tag Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Tag Payload": {
+      "main": [
+        [
+          {
+            "node": "Add Recovery Tag via Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Recovery Tag via Sync": {
+      "main": [
+        [
+          {
+            "node": "Prepare Tracker Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Tracker Rows": {
+      "main": [
+        [
+          {
+            "node": "Append Tracker Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Tracker Row": {
+      "main": [
+        [
+          {
+            "node": "Return Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
