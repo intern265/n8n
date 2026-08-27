@@ -1,0 +1,325 @@
+{
+  "name": "Flow 4: Fieldfolio Draft Order Recovery",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp"
+  },
+  "nodes": [
+    {
+      "id": "415cbae7-ff41-4aed-b6d0-94589f93c7b2",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [-400, 300],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "accountNo", "type": "string" },
+            { "name": "accountName", "type": "string" },
+            { "name": "email", "type": "string" },
+            { "name": "source", "type": "string" },
+            { "name": "lastOrderDate", "type": "string" },
+            { "name": "daysCooldown", "type": "number" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e45d82e7-cca0-42ee-a40d-38f3a4344870",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [-180, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            { "leftValue": "={{ ($json.email || \"\").toString() }}", "operator": { "type": "string", "operation": "notEmpty" }, "rightValue": "" },
+            { "leftValue": "={{ ($json.email || \"\").toString() }}", "operator": { "type": "string", "operation": "regex" }, "rightValue": "^[^\\\\s@]+@[^\\\\s@]+\\\\.[^\\\\s@]+$" },
+            { "leftValue": "={{ ($json.source || \"\").toString().toLowerCase() }}", "operator": { "type": "string", "operation": "equals" }, "rightValue": "fieldfolio" }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "6c43b714-5ed7-4850-a598-5b8e59727ded",
+      "name": "Normalize Customer",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [40, 300],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "n1", "name": "accountNo", "value": "={{ ($json.accountNo || \"\").toString().trim() }}", "type": "string" },
+            { "id": "n2", "name": "accountName", "value": "={{ ($json.accountName || \"\").toString().trim() }}", "type": "string" },
+            { "id": "n3", "name": "email", "value": "={{ ($json.email || \"\").toString().trim().toLowerCase() }}", "type": "string" },
+            { "id": "n4", "name": "source", "value": "Fieldfolio", "type": "string" },
+            { "id": "n5", "name": "flow", "value": "Fieldfolio-Recovery", "type": "string" },
+            { "id": "n6", "name": "lastOrderDate", "value": "={{ ($json.lastOrderDate || \"\").toString() }}", "type": "string" },
+            { "id": "n7", "name": "daysCooldown", "value": "={{ $json.daysCooldown ? Number($json.daysCooldown) : 7 }}", "type": "number" },
+            { "id": "n8", "name": "firstName", "value": "={{ (($json.accountName || \"\").toString().trim().split(\" \")[0]) || \"\" }}", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "44f5b8fc-45b2-42f5-bc49-34d6cac7468b",
+      "name": "Engagement Tracker Lookup",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [260, 300],
+      "alwaysOutputData": true,
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": { "__rl": true, "mode": "list", "value": "", "cachedResultName": "Engagement Tracker" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Engagement Tracker" },
+        "filtersUI": {
+          "values": [
+            { "lookupColumn": "AccountNo", "lookupValue": "={{ $json.accountNo }}" },
+            { "lookupColumn": "Flow", "lookupValue": "Fieldfolio-Recovery" }
+          ]
+        },
+        "combineFilters": "AND",
+        "options": { "returnAllMatches": "returnFirstMatch" }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "7mG1HU2Rrj1Jii2o", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "19856896-954c-4403-a4c1-b73f05f5a895",
+      "name": "Evaluate Eligibility",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const tracker = $input.item.json || {};\nconst customer = $('Normalize Customer').item.json;\nconst daysCooldown = Number(customer.daysCooldown) || 7;\nconst maxSteps = 3;\nconst now = new Date();\n\nconst trackerEmpty = !tracker.AccountNo && !tracker.Flow;\nconst status = String(tracker.Status || '').trim();\nconst step = Number(tracker.Step) || 0;\nconst lastEmailSent = tracker.LastEmailSent ? new Date(tracker.LastEmailSent) : null;\n\nconst terminal = status === 'Converted' || status === 'Escalated';\nconst daysSinceEmail = lastEmailSent ? (now - lastEmailSent) / 86400000 : Infinity;\nconst inCooldown = lastEmailSent ? daysSinceEmail < daysCooldown : false;\n\nlet eligible = false;\nlet nextStep = 1;\nlet nextStatus = 'Active';\nlet reason = '';\n\nif (trackerEmpty) {\n  eligible = true;\n  nextStep = 1;\n  nextStatus = 'Active';\n  reason = 'new-entry';\n} else if (terminal) {\n  eligible = false;\n  nextStep = step;\n  nextStatus = status;\n  reason = 'terminal-status';\n} else if (step >= maxSteps) {\n  eligible = false;\n  nextStep = step;\n  nextStatus = 'Unresponsive';\n  reason = 'max-steps-reached';\n} else if (inCooldown) {\n  eligible = false;\n  nextStep = step;\n  nextStatus = status || 'Active';\n  reason = 'in-cooldown';\n} else {\n  eligible = true;\n  nextStep = step + 1;\n  nextStatus = 'Active';\n  reason = 'due-for-next-email';\n}\n\nreturn [{ json: {\n  ...customer,\n  eligible,\n  reason,\n  currentStep: step,\n  nextStep,\n  nextStatus,\n  trackerFound: !trackerEmpty,\n  lastEmailSent: tracker.LastEmailSent || null,\n  daysSinceEmail: lastEmailSent ? Math.round(daysSinceEmail) : null,\n  nowISO: now.toISOString()\n} }];"
+      }
+    },
+    {
+      "id": "6ad8b055-ad51-4e21-8c32-5e07611bca94",
+      "name": "Recovery Eligible?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [700, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            { "leftValue": "={{ $json.eligible }}", "operator": { "type": "boolean", "operation": "true", "singleValue": true }, "rightValue": "" }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "ae25829f-625a-4e98-a5b3-f94044eb4e5d",
+      "name": "Prepare Mailchimp",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [920, 180],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            { "id": "p1", "name": "recoveryTag", "value": "Draft-Fieldfolio-Recovery", "type": "string" },
+            { "id": "p2", "name": "mergeFNAME", "value": "={{ $json.firstName || \"\" }}", "type": "string" },
+            { "id": "p3", "name": "mergeCOMPANY", "value": "={{ $json.accountName || \"\" }}", "type": "string" },
+            { "id": "p4", "name": "mergeACCTNO", "value": "={{ $json.accountNo || \"\" }}", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7b8e69f0-13fd-45fb-98c0-f55a8042af3d",
+      "name": "Upsert Mailchimp Member",
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [1140, 180],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "member",
+        "operation": "create",
+        "list": "REPLACE_WITH_MAILCHIMP_LIST_ID",
+        "email": "={{ $json.email }}",
+        "status": "subscribed",
+        "jsonParameters": false,
+        "mergeFieldsUi": {
+          "mergeFieldsValues": [
+            { "name": "FNAME", "value": "={{ $json.mergeFNAME }}" },
+            { "name": "COMPANY", "value": "={{ $json.mergeCOMPANY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "mailchimpOAuth2Api": { "id": "bMnOpJbMRuOEK6MI", "name": "Mailchimp account" }
+      }
+    },
+    {
+      "id": "cc9b9e87-ebbe-416b-8a30-521fb510bf9d",
+      "name": "Add Tag Draft-Fieldfolio-Recovery",
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [1360, 180],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "memberTag",
+        "operation": "create",
+        "list": "REPLACE_WITH_MAILCHIMP_LIST_ID",
+        "email": "={{ $(\"Prepare Mailchimp\").item.json.email }}",
+        "tags": ["Draft-Fieldfolio-Recovery"],
+        "options": {}
+      },
+      "credentials": {
+        "mailchimpOAuth2Api": { "id": "bMnOpJbMRuOEK6MI", "name": "Mailchimp account" }
+      }
+    },
+    {
+      "id": "40cc9ece-b817-4d2d-825d-5e0bc09c8db3",
+      "name": "Update Engagement Tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [1580, 180],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "list", "value": "", "cachedResultName": "Engagement Tracker" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "Engagement Tracker" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["AccountNo", "Flow"],
+          "value": {
+            "AccountNo": "={{ $(\"Prepare Mailchimp\").item.json.accountNo }}",
+            "AccountName": "={{ $(\"Prepare Mailchimp\").item.json.accountName }}",
+            "Flow": "Fieldfolio-Recovery",
+            "Step": "={{ $(\"Prepare Mailchimp\").item.json.nextStep }}",
+            "LastEmailSent": "={{ $now.toISO() }}",
+            "LastOrderDate": "={{ $(\"Prepare Mailchimp\").item.json.lastOrderDate }}",
+            "Status": "={{ $(\"Prepare Mailchimp\").item.json.nextStatus }}"
+          },
+          "schema": [
+            { "id": "AccountNo", "displayName": "AccountNo", "required": true, "defaultMatch": true, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "AccountName", "displayName": "AccountName", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "Flow", "displayName": "Flow", "required": true, "defaultMatch": true, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "Step", "displayName": "Step", "required": false, "defaultMatch": false, "display": true, "type": "number", "canBeUsedToMatch": false },
+            { "id": "LastEmailSent", "displayName": "LastEmailSent", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "LastOrderDate", "displayName": "LastOrderDate", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "Status", "displayName": "Status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false }
+          ]
+        },
+        "options": { "cellFormat": "USER_ENTERED" }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "7mG1HU2Rrj1Jii2o", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "id": "873b3012-d38b-42b1-a690-72f038f04b40",
+      "name": "Skip (Not Eligible) - END",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [920, 440],
+      "parameters": {}
+    },
+    {
+      "id": "eff50193-0882-40b0-8a6d-e973226bc255",
+      "name": "Sticky Intake",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-450, 250],
+      "parameters": {
+        "content": "## Intake & Validation\n\nTriggered by another workflow.\nExpected inputs: accountNo, accountName, email, source (must be \"Fieldfolio\"), lastOrderDate, daysCooldown (X).\n\nValidate Input drops items with missing/invalid email or wrong source.\nNormalize Customer lowercases email and stamps flow = \"Fieldfolio-Recovery\".",
+        "color": 4,
+        "width": 740,
+        "height": 200
+      }
+    },
+    {
+      "id": "b23eb246-13ec-4004-bffe-1e19b1f32627",
+      "name": "Sticky Lookup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [210, 250],
+      "parameters": {
+        "content": "## Engagement Tracker Lookup & Eligibility\n\nGoogle Sheets read finds matching row by (AccountNo, Flow).\nEvaluate Eligibility (Code) decides based on:\n- new entry (no tracker row) => eligible, Step 1\n- Status Converted / Escalated => NOT eligible\n- Step >= 3 => NOT eligible, promote to Unresponsive\n- LastEmailSent within daysCooldown => NOT eligible (cooldown)\n- else => eligible, Step + 1",
+        "color": 5,
+        "width": 740,
+        "height": 200
+      }
+    },
+    {
+      "id": "d60b2635-efea-4823-8a68-ebb6a3f7b7d0",
+      "name": "Sticky Actions",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [870, 130],
+      "parameters": {
+        "content": "## Mailchimp Actions (Eligible Only)\n\nMailchimp is the sender. This workflow ONLY tags the member.\n1. Upsert Mailchimp Member (create; onError continue if already exists)\n2. Add tag: Draft-Fieldfolio-Recovery -> Mailchimp campaign fires the email\n3. Update Engagement Tracker with Flow, Step, LastEmailSent = now, Status",
+        "color": 3,
+        "width": 960,
+        "height": 200
+      }
+    },
+    {
+      "id": "e6cf649e-2c73-407f-83aa-8b94e6cb22ed",
+      "name": "Sticky Skip",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [870, 390],
+      "parameters": {
+        "content": "## Not Eligible\n\nAlready in campaign (Active within cooldown), or terminal (Converted / Escalated), or Step >= max. End without touching Mailchimp so we do not re-enter the campaign.",
+        "color": 2,
+        "width": 300,
+        "height": 200
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Normalize Customer", "type": "main", "index": 0 }]]
+    },
+    "Normalize Customer": {
+      "main": [[{ "node": "Engagement Tracker Lookup", "type": "main", "index": 0 }]]
+    },
+    "Engagement Tracker Lookup": {
+      "main": [[{ "node": "Evaluate Eligibility", "type": "main", "index": 0 }]]
+    },
+    "Evaluate Eligibility": {
+      "main": [[{ "node": "Recovery Eligible?", "type": "main", "index": 0 }]]
+    },
+    "Recovery Eligible?": {
+      "main": [
+        [{ "node": "Prepare Mailchimp", "type": "main", "index": 0 }],
+        [{ "node": "Skip (Not Eligible) - END", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Mailchimp": {
+      "main": [[{ "node": "Upsert Mailchimp Member", "type": "main", "index": 0 }]]
+    },
+    "Upsert Mailchimp Member": {
+      "main": [[{ "node": "Add Tag Draft-Fieldfolio-Recovery", "type": "main", "index": 0 }]]
+    },
+    "Add Tag Draft-Fieldfolio-Recovery": {
+      "main": [[{ "node": "Update Engagement Tracker", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "tags": []
+}
