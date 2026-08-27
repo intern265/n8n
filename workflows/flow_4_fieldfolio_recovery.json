@@ -60,8 +60,7 @@
             { "id": "n4", "name": "source", "value": "Fieldfolio", "type": "string" },
             { "id": "n5", "name": "flow", "value": "Fieldfolio-Recovery", "type": "string" },
             { "id": "n6", "name": "lastOrderDate", "value": "={{ ($json.lastOrderDate || \"\").toString() }}", "type": "string" },
-            { "id": "n7", "name": "daysCooldown", "value": "={{ $json.daysCooldown ? Number($json.daysCooldown) : 7 }}", "type": "number" },
-            { "id": "n8", "name": "firstName", "value": "={{ (($json.accountName || \"\").toString().trim().split(\" \")[0]) || \"\" }}", "type": "string" }
+            { "id": "n7", "name": "daysCooldown", "value": "={{ $json.daysCooldown ? Number($json.daysCooldown) : 7 }}", "type": "number" }
           ]
         }
       }
@@ -130,39 +129,9 @@
         "includeOtherFields": true,
         "assignments": {
           "assignments": [
-            { "id": "p1", "name": "recoveryTag", "value": "Draft-Fieldfolio-Recovery", "type": "string" },
-            { "id": "p2", "name": "mergeFNAME", "value": "={{ $json.firstName || \"\" }}", "type": "string" },
-            { "id": "p3", "name": "mergeCOMPANY", "value": "={{ $json.accountName || \"\" }}", "type": "string" },
-            { "id": "p4", "name": "mergeACCTNO", "value": "={{ $json.accountNo || \"\" }}", "type": "string" }
+            { "id": "p1", "name": "recoveryTag", "value": "Draft-Fieldfolio-Recovery", "type": "string" }
           ]
         }
-      }
-    },
-    {
-      "id": "7b8e69f0-13fd-45fb-98c0-f55a8042af3d",
-      "name": "Upsert Mailchimp Member",
-      "type": "n8n-nodes-base.mailchimp",
-      "typeVersion": 1,
-      "position": [1140, 180],
-      "onError": "continueRegularOutput",
-      "parameters": {
-        "authentication": "oAuth2",
-        "resource": "member",
-        "operation": "create",
-        "list": "REPLACE_WITH_MAILCHIMP_LIST_ID",
-        "email": "={{ $json.email }}",
-        "status": "subscribed",
-        "jsonParameters": false,
-        "mergeFieldsUi": {
-          "mergeFieldsValues": [
-            { "name": "FNAME", "value": "={{ $json.mergeFNAME }}" },
-            { "name": "COMPANY", "value": "={{ $json.mergeCOMPANY }}" }
-          ]
-        },
-        "options": {}
-      },
-      "credentials": {
-        "mailchimpOAuth2Api": { "id": "bMnOpJbMRuOEK6MI", "name": "Mailchimp account" }
       }
     },
     {
@@ -170,13 +139,13 @@
       "name": "Add Tag Draft-Fieldfolio-Recovery",
       "type": "n8n-nodes-base.mailchimp",
       "typeVersion": 1,
-      "position": [1360, 180],
+      "position": [1140, 180],
       "parameters": {
         "authentication": "oAuth2",
         "resource": "memberTag",
         "operation": "create",
         "list": "REPLACE_WITH_MAILCHIMP_LIST_ID",
-        "email": "={{ $(\"Prepare Mailchimp\").item.json.email }}",
+        "email": "={{ $json.email }}",
         "tags": ["Draft-Fieldfolio-Recovery"],
         "options": {}
       },
@@ -189,7 +158,7 @@
       "name": "Update Engagement Tracker",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
-      "position": [1580, 180],
+      "position": [1360, 180],
       "parameters": {
         "authentication": "oAuth2",
         "resource": "sheet",
@@ -239,7 +208,7 @@
       "typeVersion": 1,
       "position": [-450, 250],
       "parameters": {
-        "content": "## Intake & Validation\n\nTriggered by another workflow.\nExpected inputs: accountNo, accountName, email, source (must be \"Fieldfolio\"), lastOrderDate, daysCooldown (X).\n\nValidate Input drops items with missing/invalid email or wrong source.\nNormalize Customer lowercases email and stamps flow = \"Fieldfolio-Recovery\".",
+        "content": "## Intake & Validation\n\nTriggered by another workflow which already handles Mailchimp member upsert.\nExpected inputs: accountNo, accountName, email, source (must be \"Fieldfolio\"), lastOrderDate, daysCooldown (X).\n\nValidate Input drops items with missing/invalid email or wrong source.\nNormalize Customer lowercases email and stamps flow = \"Fieldfolio-Recovery\".",
         "color": 4,
         "width": 740,
         "height": 200
@@ -265,9 +234,9 @@
       "typeVersion": 1,
       "position": [870, 130],
       "parameters": {
-        "content": "## Mailchimp Actions (Eligible Only)\n\nMailchimp is the sender. This workflow ONLY tags the member.\n1. Upsert Mailchimp Member (create; onError continue if already exists)\n2. Add tag: Draft-Fieldfolio-Recovery -> Mailchimp campaign fires the email\n3. Update Engagement Tracker with Flow, Step, LastEmailSent = now, Status",
+        "content": "## Tag & Track (Eligible Only)\n\nMember already exists in Mailchimp (upserted by the parent workflow).\nThis flow only:\n1. Adds tag Draft-Fieldfolio-Recovery -> Mailchimp campaign fires the next email\n2. Updates Engagement Tracker with Flow, Step, LastEmailSent = now, Status",
         "color": 3,
-        "width": 960,
+        "width": 740,
         "height": 200
       }
     },
@@ -278,7 +247,7 @@
       "typeVersion": 1,
       "position": [870, 390],
       "parameters": {
-        "content": "## Not Eligible\n\nAlready in campaign (Active within cooldown), or terminal (Converted / Escalated), or Step >= max. End without touching Mailchimp so we do not re-enter the campaign.",
+        "content": "## Not Eligible\n\nAlready in campaign (Active within cooldown), or terminal (Converted / Escalated), or Step >= max. End without tagging so we do not re-trigger the campaign step.",
         "color": 2,
         "width": 300,
         "height": 200
@@ -308,9 +277,6 @@
       ]
     },
     "Prepare Mailchimp": {
-      "main": [[{ "node": "Upsert Mailchimp Member", "type": "main", "index": 0 }]]
-    },
-    "Upsert Mailchimp Member": {
       "main": [[{ "node": "Add Tag Draft-Fieldfolio-Recovery", "type": "main", "index": 0 }]]
     },
     "Add Tag Draft-Fieldfolio-Recovery": {
