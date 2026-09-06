@@ -1,0 +1,743 @@
+{
+  "name": "j elliot weekly campaign report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -760,
+        200
+      ],
+      "id": "544719a7-fab8-54b5-8f56-80fdb6644060",
+      "name": "Weekly Monday 8am"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        380
+      ],
+      "id": "163f46c7-a6b2-5f7e-a343-1902af57a5b7",
+      "name": "Run Manually / Backfill"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// REPORT CONFIG — the only node you should need to edit\n// ------------------------------------------------------------\n// Everything downstream (which spreadsheet, which tabs, which week,\n// who gets the email, how revenue is attributed) is decided here so\n// there is one place to change and one place to audit.\n//\n// BACKFILL / RE-RUN: pass { \"asOfDate\": \"2026-09-07T08:00:00+10:00\" }\n// into this workflow (manual execution, \"Edit Fields\" node, or a parent\n// workflow) and it reports the week BEFORE that instant instead of the\n// week before now. Nothing else changes.\n// ============================================================\n\n// ---- what to report on -------------------------------------------------\nconst SPREADSHEET_ID = '163l3DNFeW5e_O_qXcRLAgh1vDOzV9hpa87gSK6O1XQk';\n\n// Tab names as they appear at the bottom of the spreadsheet. If a tab is\n// renamed, change it here — the Google Sheets nodes read these values.\nconst TABS = {\n  reactivation: 'Reactivation',\n  salesCycle: 'Sales Cycle',\n  invoice: 'Invoice Reminders',\n  fieldfolio: 'Fieldfolio Draft Orders',\n  history: 'Report History',\n};\n\n// ---- when -------------------------------------------------------------\n// The workflow runs Monday morning and reports the week that just ended:\n// Monday 00:00:00 -> Sunday 23:59:59.999, local time in REPORT_TZ.\n//\n// AEST vs AEDT: 'Australia/Sydney' means 8am LOCAL all year (the clock the\n// team actually reads). 'Australia/Brisbane' means 8am AEST all year (no\n// daylight saving) — which is 7am Sydney time over summer. Pick one.\nconst REPORT_TZ = 'Australia/Sydney';\n\n// ---- who --------------------------------------------------------------\nconst RECIPIENTS = 'tanay@zerobusy.com';\n\n// ---- revenue attribution ----------------------------------------------\nconst REVENUE = {\n  companyNo: 36112,\n  transType: 'SIN',\n  // An order only counts as flow revenue if it lands within this many days\n  // of the customer entering the flow. Without a cap, a customer who entered\n  // six months ago has every order since credited to the flow forever.\n  attributionDays: 30,\n  // Account numbers are pasted into the SQL IN() list, so anything that is\n  // not a plain account code is dropped rather than sent to the database.\n  accountPattern: '^[A-Za-z0-9._-]{1,32}$',\n  // Safety valve: refuse to build an unbounded query.\n  maxAccounts: 2000,\n};\n\nconst CURRENCY = { code: 'AUD', symbol: '$' };\n\n// ========================================================================\n// Timezone maths. Intl is used rather than a fixed +10:00 offset so the\n// window is still correct across the daylight-saving boundary.\n// ========================================================================\n\nfunction partsIn(date, tz) {\n  const fmt = new Intl.DateTimeFormat('en-CA', {\n    timeZone: tz,\n    year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', second: '2-digit',\n    hour12: false,\n  });\n  const p = {};\n  for (const part of fmt.formatToParts(date)) p[part.type] = part.value;\n  return {\n    y: Number(p.year),\n    m: Number(p.month),\n    d: Number(p.day),\n    // some engines render midnight as hour \"24\"\n    H: Number(p.hour) % 24,\n    M: Number(p.minute),\n    S: Number(p.second),\n  };\n}\n\n// The UTC instant whose wall clock in `tz` reads exactly y-m-d H:M:S.\nfunction zonedToUtc(y, m, d, H, M, S, tz) {\n  const target = Date.UTC(y, m - 1, d, H, M, S);\n  let ts = target;\n  for (let i = 0; i < 4; i++) {\n    const p = partsIn(new Date(ts), tz);\n    const offset = Date.UTC(p.y, p.m - 1, p.d, p.H, p.M, p.S) - ts;\n    const next = target - offset;\n    if (next === ts) break;\n    ts = next;\n  }\n  return new Date(ts);\n}\n\nfunction dayOfWeekIn(date, tz) {\n  const p = partsIn(date, tz);\n  return new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay(); // 0 Sun .. 6 Sat\n}\n\n// ---- resolve \"now\" ----------------------------------------------------\nlet trigger = {};\ntry {\n  trigger = ($input.first() || {}).json || {};\n} catch (e) {\n  trigger = {};\n}\n\nconst override = trigger.asOfDate ? new Date(trigger.asOfDate) : null;\nif (trigger.asOfDate && Number.isNaN(override.getTime())) {\n  throw new Error(`asOfDate is not a parseable date: ${trigger.asOfDate}`);\n}\nconst asOf = override || new Date();\n\n// ---- the reporting week ----------------------------------------------\nconst nowParts = partsIn(asOf, REPORT_TZ);\nconst daysSinceMonday = (dayOfWeekIn(asOf, REPORT_TZ) + 6) % 7;\n\n// Calendar arithmetic on the LOCAL date, then convert each boundary to an\n// instant. Doing it the other way round — shifting the instant by\n// 7 * 86400000 — lands an hour out across a daylight-saving change and can\n// roll the boundary into the wrong day. Date.UTC handles month/year rollover.\nconst localDay = (offsetDays) => {\n  const d = new Date(Date.UTC(nowParts.y, nowParts.m - 1, nowParts.d + offsetDays));\n  return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };\n};\nconst midnight = (cal) => zonedToUtc(cal.y, cal.m, cal.d, 0, 0, 0, REPORT_TZ);\n\nconst weekStart = midnight(localDay(-(daysSinceMonday + 7)));\nconst weekEndExclusive = midnight(localDay(-daysSinceMonday));\nconst prevWeekStart = midnight(localDay(-(daysSinceMonday + 14)));\n\nconst asLocalDate = (date) => {\n  const p = partsIn(date, REPORT_TZ);\n  const pad = (n) => String(n).padStart(2, '0');\n  return `${p.y}-${pad(p.m)}-${pad(p.d)}`;\n};\n\nreturn [{\n  json: {\n    spreadsheetId: SPREADSHEET_ID,\n    tabs: TABS,\n    timezone: REPORT_TZ,\n    recipients: RECIPIENTS,\n    revenue: REVENUE,\n    currency: CURRENCY,\n    generatedAt: asOf.toISOString(),\n    isBackfill: Boolean(override),\n    window: {\n      startIso: weekStart.toISOString(),\n      endExclusiveIso: weekEndExclusive.toISOString(),\n      // inclusive Sunday, for display only\n      endInclusiveIso: new Date(weekEndExclusive.getTime() - 1).toISOString(),\n      startDate: asLocalDate(weekStart),\n      endDate: asLocalDate(new Date(weekEndExclusive.getTime() - 1)),\n      prevStartIso: prevWeekStart.toISOString(),\n      prevEndExclusiveIso: weekStart.toISOString(),\n      prevStartDate: asLocalDate(prevWeekStart),\n      prevEndDate: asLocalDate(new Date(weekStart.getTime() - 1)),\n    },\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        290
+      ],
+      "id": "2bbf7e14-124e-51cf-9071-a551bd1b599a",
+      "name": "Report Config"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Report Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Report Config').first().json.tabs.reactivation }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -300,
+        290
+      ],
+      "id": "0332dac0-e6f7-5590-9461-42c96c564677",
+      "name": "Fetch Reactivation Tracker",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "j-elliot-trackers"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Report Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Report Config').first().json.tabs.salesCycle }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -80,
+        290
+      ],
+      "id": "5d518600-7002-5161-a766-8609b1f8f0b3",
+      "name": "Fetch Sales Cycle Tracker",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "j-elliot-trackers"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Report Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Report Config').first().json.tabs.invoice }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        140,
+        290
+      ],
+      "id": "10b4268f-c462-52a9-82d0-a9b532380dc0",
+      "name": "Fetch Invoice Tracker",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "j-elliot-trackers"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Report Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Report Config').first().json.tabs.fieldfolio }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        360,
+        290
+      ],
+      "id": "58b174bf-f6a2-590f-a4eb-eba8c928beb0",
+      "name": "Fetch Fieldfolio Tracker",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "j-elliot-trackers"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Report Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Report Config').first().json.tabs.history }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        580,
+        290
+      ],
+      "id": "4a220b20-1cc3-531c-9bea-98181d8d0dd3",
+      "name": "Fetch Report History",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "j-elliot-trackers"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// NORMALISE TRACKER ROWS\n// ------------------------------------------------------------\n// Turns four hand-maintained Google Sheets tabs into one predictable\n// shape, decides which rows belong to the reporting week, and builds\n// the (parameter-safe) revenue query for the accounts that converted.\n//\n// The trackers are edited by people, so nothing here assumes an exact\n// column name. Headers are matched case/space/punctuation-insensitively\n// against a synonym list, and anything that could not be resolved is\n// reported in the data-quality block instead of silently becoming zero.\n// ============================================================\n\nconst cfg = $('Report Config').first().json;\nconst winStart = new Date(cfg.window.startIso).getTime();\nconst winEnd = new Date(cfg.window.endExclusiveIso).getTime();\n\n// ---- header matching ---------------------------------------------------\nconst key = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');\n\nconst FIELDS = {\n  accountNo: ['accountno', 'account', 'accountnumber', 'billaccountno', 'acctno', 'customerno', 'debtorno'],\n  customer: ['customer', 'customername', 'company', 'companyname', 'businessname', 'name', 'tradingname'],\n  email: ['email', 'emailaddress', 'contactemail'],\n  status: ['status', 'flowstatus', 'currentstatus', 'state', 'outcome'],\n  step: ['step', 'currentstep', 'emailstep', 'stepno', 'sequencestep', 'stage', 'lastemailsent'],\n  tier: ['tier', 'spendtier', 'customertier', 'tiergroup', 'band'],\n  enteredFlowAt: ['enteredflowat', 'enteredflow', 'entereddate', 'dateentered', 'startdate', 'flowstart', 'enrolledat', 'addedat', 'dateadded'],\n  lastContactedAt: ['lastcontactedat', 'lastcontacted', 'lastemailsentat', 'lastemailat', 'lasttouch', 'lastsent', 'sentat', 'datesent', 'lastactivity'],\n  convertedAt: ['convertedat', 'converteddate', 'dateconverted', 'conversiondate', 'orderdate', 'wondate'],\n  invoiceNo: ['invoiceno', 'invoicenumber', 'invoice', 'docno', 'documentno', 'transno'],\n  amountRemaining: ['amountremaining', 'amountoutstanding', 'outstanding', 'balance', 'balancedue', 'amountdue', 'remaining', 'invoiceamount', 'amount'],\n  amountRecovered: ['amountrecovered', 'amountpaid', 'paid', 'recovered', 'paidamount'],\n  resolvedAt: ['resolvedat', 'datepaid', 'paidat', 'paiddate', 'resolveddate', 'dateresolved'],\n};\n\n// Longest synonym wins, so \"lastemailsentat\" is not eaten by \"email\".\nconst LOOKUP = new Map();\nfor (const [field, synonyms] of Object.entries(FIELDS)) {\n  for (const s of synonyms) {\n    const existing = LOOKUP.get(s);\n    if (!existing || s.length > existing.length) LOOKUP.set(s, field);\n  }\n}\n\nfunction mapRow(raw) {\n  const out = { _raw: raw };\n  for (const [header, value] of Object.entries(raw || {})) {\n    const field = LOOKUP.get(key(header));\n    if (field && (out[field] === undefined || out[field] === '' || out[field] === null)) {\n      out[field] = value;\n    }\n  }\n  return out;\n}\n\n// ---- value parsing -----------------------------------------------------\nconst text = (v) => String(v == null ? '' : v).replace(/\\s+/g, ' ').trim();\n\nfunction money(v) {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;\n  const s = text(v).replace(/[$,\\s]/g, '');\n  if (!s) return 0;\n  // (1,234.00) is an accounting negative\n  const neg = /^\\(.*\\)$/.test(s);\n  const n = Number(neg ? s.slice(1, -1) : s);\n  if (!Number.isFinite(n)) return 0;\n  return neg ? -n : n;\n}\n\n// Sheets hands back ISO strings, AU day-first strings, or serial numbers.\n// Bare dates are read as local midnight in the report timezone.\nfunction parseDate(v) {\n  if (v == null || v === '') return null;\n  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;\n\n  if (typeof v === 'number' && Number.isFinite(v)) {\n    // Google Sheets serial: days since 1899-12-30\n    if (v > 20000 && v < 80000) return new Date(Math.round((v - 25569) * 86400000));\n    return null;\n  }\n\n  const s = text(v);\n  if (!s) return null;\n\n  // ISO first — unambiguous.\n  let m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})(?:[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?)?/);\n  if (m) {\n    return localToUtc(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));\n  }\n\n  // Day-first: 1/9/2026, 01-09-2026 14:32. Australian sheets are day-first;\n  // a US-style month-first value would be misread, so anything with a day\n  // part above 12 is the only case we can prove either way.\n  m = s.match(/^(\\d{1,2})[/\\-.](\\d{1,2})[/\\-.](\\d{2,4})(?:[T ,]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?)?/);\n  if (m) {\n    let [, d, mo, y, H, M, S] = m;\n    y = Number(y);\n    if (y < 100) y += 2000;\n    return localToUtc(y, Number(mo), Number(d), +(H || 0), +(M || 0), +(S || 0));\n  }\n\n  const fallback = new Date(s);\n  return Number.isNaN(fallback.getTime()) ? null : fallback;\n}\n\nfunction partsIn(date, tz) {\n  const fmt = new Intl.DateTimeFormat('en-CA', {\n    timeZone: tz,\n    year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', second: '2-digit',\n    hour12: false,\n  });\n  const p = {};\n  for (const part of fmt.formatToParts(date)) p[part.type] = part.value;\n  return {\n    y: Number(p.year), m: Number(p.month), d: Number(p.day),\n    H: Number(p.hour) % 24, M: Number(p.minute), S: Number(p.second),\n  };\n}\n\nfunction localToUtc(y, mo, d, H, M, S) {\n  const target = Date.UTC(y, mo - 1, d, H, M, S);\n  let ts = target;\n  for (let i = 0; i < 4; i++) {\n    const p = partsIn(new Date(ts), cfg.timezone);\n    const offset = Date.UTC(p.y, p.m - 1, p.d, p.H, p.M, p.S) - ts;\n    const next = target - offset;\n    if (next === ts) break;\n    ts = next;\n  }\n  return new Date(ts);\n}\n\nconst inWindow = (date) => {\n  if (!date) return false;\n  const t = date.getTime();\n  return t >= winStart && t < winEnd;\n};\n\n// ---- status vocabulary -------------------------------------------------\n// Each tracker gets its own map because \"Active\" means \"still being worked\"\n// in Fieldfolio but nothing in the invoice tracker.\nconst STATUS_MAPS = {\n  reactivation: {\n    converted: ['converted', 'won', 'ordered', 'purchased', 'reactivated', 'order placed'],\n    unresponsive: ['unresponsive', 'no response', 'noresponse', 'exhausted', 'lapsed', 'dead', 'closed', 'opted out', 'unsubscribed'],\n    step1: ['step 1', 'step1', 'email 1', 'email1', '1', 'first email'],\n    step2: ['step 2', 'step2', 'email 2', 'email2', '2', 'second email'],\n    step3: ['step 3', 'step3', 'email 3', 'email3', '3', 'third email'],\n  },\n  salesCycle: {\n    converted: ['converted', 'won', 'ordered', 'purchased', 'order placed'],\n    unresponsive: ['unresponsive', 'no response', 'noresponse', 'lost', 'dead', 'closed', 'opted out'],\n    inProgress: ['in progress', 'inprogress', 'active', 'open', 'nudged', 'contacted', 'pending', 'working'],\n  },\n  invoice: {\n    resolved: ['resolved', 'paid', 'settled', 'cleared', 'closed'],\n    escalated: ['escalated', 'escalation', 'legal', 'debt collection', 'collections', 'on hold'],\n    pending: ['pending', 'open', 'outstanding', 'unpaid', 'overdue', 'reminded', 'active'],\n  },\n  fieldfolio: {\n    converted: ['converted', 'won', 'ordered', 'purchased', 'recovered', 'order placed'],\n    active: ['active', 'open', 'in progress', 'inprogress', 'pending', 'sent', 'contacted'],\n  },\n};\n\nfunction classify(rawStatus, map) {\n  const s = text(rawStatus).toLowerCase();\n  if (!s) return null;\n  let best = null;\n  for (const [bucket, values] of Object.entries(map)) {\n    for (const v of values) {\n      // exact match beats substring so \"no response\" never reads as \"response\"\n      if (s === v) return bucket;\n      if (s.includes(v) && (!best || v.length > best.len)) best = { bucket, len: v.length };\n    }\n  }\n  return best ? best.bucket : null;\n}\n\n// Reactivation step can live in a Step column or be implied by the status.\nfunction stepOf(row, bucket) {\n  const fromStatus = { step1: 1, step2: 2, step3: 3 }[bucket];\n  if (fromStatus) return fromStatus;\n  const s = text(row.step).toLowerCase();\n  const m = s.match(/(\\d+)/);\n  if (m) {\n    const n = Number(m[1]);\n    if (n >= 1 && n <= 3) return n;\n  }\n  return null;\n}\n\nfunction tierOf(row) {\n  const s = text(row.tier).toUpperCase();\n  const m = s.match(/\\b([ABC])\\b/) || s.match(/TIER\\s*([ABC])/);\n  return m ? m[1] : null;\n}\n\n// ---- read one tab ------------------------------------------------------\nfunction readTab(nodeName, tabLabel) {\n  const source = { node: nodeName, tab: tabLabel, ok: false, rowCount: 0, error: null, headers: [] };\n  let items = [];\n  try {\n    items = $(nodeName).all();\n  } catch (e) {\n    source.error = `node did not run: ${e.message}`;\n    return { source, rows: [] };\n  }\n\n  const rows = [];\n  for (const item of items) {\n    const raw = (item && item.json) || {};\n    if (raw.error) {\n      source.error = text(raw.error.message || raw.error) || 'read failed';\n      continue;\n    }\n    // an empty tab yields a single blank item\n    if (Object.keys(raw).length === 0) continue;\n    if (!source.headers.length) source.headers = Object.keys(raw);\n    rows.push(mapRow(raw));\n  }\n\n  source.ok = !source.error;\n  source.rowCount = rows.length;\n  if (source.ok && rows.length === 0) {\n    source.error = 'tab read successfully but returned no rows — check the tab name and that row 1 holds the headers';\n    source.ok = false;\n  }\n  return { source, rows };\n}\n\n// A row counts toward the week if the flow did something with it in the\n// week: entered, contacted, converted or resolved inside the window.\nfunction touchedThisWeek(row) {\n  return inWindow(row._entered) || inWindow(row._contacted)\n    || inWindow(row._converted) || inWindow(row._resolved);\n}\n\n// A conversion belongs to THIS week only if it was dated this week. A row\n// with no conversion date at all is credited to the week it was touched,\n// which is the best the tracker can support.\nfunction convertedThisWeek(row, bucket) {\n  if (bucket !== 'converted') return false;\n  return row._converted ? inWindow(row._converted) : true;\n}\n\n// Same rule for an invoice being marked paid.\nfunction resolvedThisWeek(row, bucket) {\n  if (bucket !== 'resolved') return false;\n  return row._resolved ? inWindow(row._resolved) : true;\n}\n\nfunction stampDates(row) {\n  row._entered = parseDate(row.enteredFlowAt);\n  row._contacted = parseDate(row.lastContactedAt);\n  row._converted = parseDate(row.convertedAt);\n  row._resolved = parseDate(row.resolvedAt);\n  return row;\n}\n\nconst sources = [];\nconst push = (r) => { sources.push(r.source); return r.rows.map(stampDates); };\n\nconst reactRows = push(readTab('Fetch Reactivation Tracker', cfg.tabs.reactivation));\nconst salesRows = push(readTab('Fetch Sales Cycle Tracker', cfg.tabs.salesCycle));\nconst invoiceRows = push(readTab('Fetch Invoice Tracker', cfg.tabs.invoice));\nconst fieldfolioRows = push(readTab('Fetch Fieldfolio Tracker', cfg.tabs.fieldfolio));\n\n// History is optional — the first ever run has no prior week.\nlet history = [];\ntry {\n  history = $('Fetch Report History').all()\n    .map((i) => (i && i.json) || {})\n    .filter((j) => j && !j.error && Object.keys(j).length);\n} catch (e) {\n  history = [];\n}\n\n// ---- conversion bookkeeping -------------------------------------------\n// One record per (flow, account) that converted inside the window, carrying\n// the date the customer entered the flow. The aggregate node uses these to\n// attribute transactions, and to make sure one transaction is credited to\n// one flow only.\nconst convertedRecords = [];\nconst seenAccounts = new Set();\n\nfunction noteConversion(flow, row) {\n  const account = text(row.accountNo);\n  if (!account) return;\n  convertedRecords.push({\n    flow,\n    accountNo: account,\n    customer: text(row.customer),\n    enteredFlowAt: row._entered ? row._entered.toISOString() : null,\n    convertedAt: row._converted ? row._converted.toISOString() : null,\n  });\n}\n\nfunction noteContacted(row) {\n  const account = text(row.accountNo);\n  if (account) seenAccounts.add(account.toLowerCase());\n}\n\n// ---- FLOW 1: inactive reactivation ------------------------------------\nconst flow1 = {\n  key: 'reactivation', name: 'Inactive Reactivation', unit: 'Customers',\n  inFlow: 0, step1: 0, step2: 0, step3: 0, converted: 0, unresponsive: 0,\n  unclassified: 0, openPipeline: 0, convertedEarlier: 0,\n};\nfor (const row of reactRows) {\n  const bucket = classify(row.status, STATUS_MAPS.reactivation);\n  const open = bucket !== 'converted' && bucket !== 'unresponsive';\n  if (open) flow1.openPipeline++;\n  if (!touchedThisWeek(row)) continue;\n\n  flow1.inFlow++;\n  noteContacted(row);\n  if (bucket === 'converted') {\n    if (convertedThisWeek(row, bucket)) {\n      flow1.converted++;\n      noteConversion('reactivation', row);\n    } else {\n      flow1.convertedEarlier++;\n    }\n  } else if (bucket === 'unresponsive') {\n    flow1.unresponsive++;\n  } else {\n    const step = stepOf(row, bucket);\n    if (step === 1) flow1.step1++;\n    else if (step === 2) flow1.step2++;\n    else if (step === 3) flow1.step3++;\n    else flow1.unclassified++;\n  }\n}\n\n// ---- FLOW 2: sales cycle nudge ----------------------------------------\nconst flow2 = {\n  key: 'salesCycle', name: 'Sales Cycle Nudge', unit: 'Customers',\n  inFlow: 0, tierA: 0, tierB: 0, tierC: 0, tierUnknown: 0,\n  inProgress: 0, converted: 0, unresponsive: 0, unclassified: 0,\n  openPipeline: 0, convertedEarlier: 0,\n};\nfor (const row of salesRows) {\n  const bucket = classify(row.status, STATUS_MAPS.salesCycle);\n  const open = bucket !== 'converted' && bucket !== 'unresponsive';\n  if (open) flow2.openPipeline++;\n  if (!touchedThisWeek(row)) continue;\n\n  flow2.inFlow++;\n  noteContacted(row);\n  const tier = tierOf(row);\n  if (tier === 'A') flow2.tierA++;\n  else if (tier === 'B') flow2.tierB++;\n  else if (tier === 'C') flow2.tierC++;\n  else flow2.tierUnknown++;\n\n  if (bucket === 'converted') {\n    if (convertedThisWeek(row, bucket)) {\n      flow2.converted++;\n      noteConversion('salesCycle', row);\n    } else {\n      flow2.convertedEarlier++;\n    }\n  } else if (bucket === 'unresponsive') {\n    flow2.unresponsive++;\n  } else if (bucket === 'inProgress') {\n    flow2.inProgress++;\n  } else {\n    flow2.inProgress++;\n    flow2.unclassified++;\n  }\n}\n\n// ---- FLOW 3: invoice reminders ----------------------------------------\n// Invoices are documents, not people. They are counted and reported on\n// their own terms and never folded into the customer-conversion numbers.\nconst flow3 = {\n  key: 'invoice', name: 'Invoice Reminders', unit: 'Invoices',\n  inFlow: 0, pending: 0, resolved: 0, escalated: 0, unclassified: 0,\n  recovered: 0, outstanding: 0, openPipeline: 0, accounts: 0, resolvedEarlier: 0,\n};\nconst invoiceAccounts = new Set();\nfor (const row of invoiceRows) {\n  const bucket = classify(row.status, STATUS_MAPS.invoice);\n  if (bucket !== 'resolved') flow3.openPipeline++;\n  if (!touchedThisWeek(row)) continue;\n\n  flow3.inFlow++;\n  const account = text(row.accountNo);\n  if (account) invoiceAccounts.add(account.toLowerCase());\n\n  const amount = money(row.amountRemaining);\n  if (bucket === 'resolved' && !resolvedThisWeek(row, bucket)) {\n    flow3.resolvedEarlier++;\n  } else if (bucket === 'resolved') {\n    flow3.resolved++;\n    // Prefer an explicit recovered column; fall back to the balance that\n    // was sitting on the invoice before it was marked paid.\n    flow3.recovered += row.amountRecovered !== undefined\n      ? money(row.amountRecovered)\n      : amount;\n  } else if (bucket === 'escalated') {\n    flow3.escalated++;\n    flow3.outstanding += amount;\n  } else {\n    if (bucket !== 'pending') flow3.unclassified++;\n    flow3.pending++;\n    flow3.outstanding += amount;\n  }\n}\nflow3.accounts = invoiceAccounts.size;\n\n// ---- FLOW 4: fieldfolio draft orders ----------------------------------\nconst flow4 = {\n  key: 'fieldfolio', name: 'Fieldfolio Draft Orders', unit: 'Recovery emails',\n  inFlow: 0, active: 0, converted: 0, unclassified: 0,\n  openPipeline: 0, convertedEarlier: 0,\n};\nfor (const row of fieldfolioRows) {\n  const bucket = classify(row.status, STATUS_MAPS.fieldfolio);\n  if (bucket !== 'converted') flow4.openPipeline++;\n  if (!touchedThisWeek(row)) continue;\n\n  flow4.inFlow++;\n  noteContacted(row);\n  if (bucket === 'converted') {\n    if (convertedThisWeek(row, bucket)) {\n      flow4.converted++;\n      noteConversion('fieldfolio', row);\n    } else {\n      flow4.convertedEarlier++;\n    }\n  } else {\n    if (bucket !== 'active') flow4.unclassified++;\n    flow4.active++;\n  }\n}\n\n// ---- revenue query ----------------------------------------------------\n// Built here rather than in the SQL node so the account list can be\n// validated first. Account codes that do not match the configured pattern\n// are dropped and reported — they are never concatenated into the query.\nconst accountRe = new RegExp(cfg.revenue.accountPattern);\nconst wanted = new Map(); // lowercased account -> earliest entered-flow ms\nconst rejectedAccounts = [];\nlet earliestEntered = null;\n\nfor (const rec of convertedRecords) {\n  if (!accountRe.test(rec.accountNo)) {\n    rejectedAccounts.push(rec.accountNo);\n    continue;\n  }\n  const entered = rec.enteredFlowAt ? new Date(rec.enteredFlowAt).getTime() : winStart;\n  const lc = rec.accountNo.toLowerCase();\n  if (!wanted.has(lc) || entered < wanted.get(lc)) wanted.set(lc, entered);\n  if (earliestEntered === null || entered < earliestEntered) earliestEntered = entered;\n}\n\nconst accountList = convertedRecords\n  .map((r) => r.accountNo)\n  .filter((a) => accountRe.test(a));\nconst uniqueAccounts = [...new Set(accountList)];\n\nif (uniqueAccounts.length > cfg.revenue.maxAccounts) {\n  throw new Error(\n    `${uniqueAccounts.length} converted accounts exceeds maxAccounts (${cfg.revenue.maxAccounts}). `\n    + 'That is far more than a normal week and usually means the trackers were bulk-edited '\n    + 'or the reporting window is wrong — check before querying E-Suite.',\n  );\n}\n\nconst sqlDate = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');\n\n// Transactions can only be attributed from the moment a customer entered\n// the flow, and only up to the end of the reporting week.\nconst queryFrom = earliestEntered === null ? winStart : Math.min(earliestEntered, winStart);\n\nlet revenueQuery;\nif (uniqueAccounts.length === 0) {\n  // A real query with no accounts would be `IN ()` — a syntax error. Send a\n  // well-formed no-op instead so the chain stays linear.\n  revenueQuery = 'SELECT TOP 0 CAST(NULL AS VARCHAR(32)) AS BillAccountNo,'\n    + ' CAST(NULL AS DATETIME) AS TransDate, CAST(NULL AS DECIMAL(18,2)) AS Revenue'\n    + ' FROM T_trans';\n} else {\n  revenueQuery = [\n    'SELECT t.BillAccountNo, t.TransDate, t.TransTotalIncGST AS Revenue',\n    'FROM T_trans t',\n    `WHERE t.CompanyNo = ${Number(cfg.revenue.companyNo)}`,\n    `  AND t.TransType = '${String(cfg.revenue.transType).replace(/[^A-Za-z0-9]/g, '')}'`,\n    `  AND t.TransDate >= '${sqlDate(queryFrom)}'`,\n    `  AND t.TransDate <  '${sqlDate(winEnd)}'`,\n    `  AND t.BillAccountNo IN (${uniqueAccounts.map((a) => `'${a}'`).join(', ')})`,\n    'ORDER BY t.BillAccountNo, t.TransDate',\n  ].join('\\n');\n}\n\n// ---- data quality ------------------------------------------------------\nconst issues = [];\nfor (const s of sources) if (!s.ok) issues.push(`${s.tab}: ${s.error}`);\nif (flow1.unclassified) issues.push(`${cfg.tabs.reactivation}: ${flow1.unclassified} row(s) with a status/step this report could not classify`);\nif (flow2.unclassified) issues.push(`${cfg.tabs.salesCycle}: ${flow2.unclassified} row(s) with an unrecognised status (counted as In Progress)`);\nif (flow2.tierUnknown) issues.push(`${cfg.tabs.salesCycle}: ${flow2.tierUnknown} row(s) with no readable tier`);\nif (flow3.unclassified) issues.push(`${cfg.tabs.invoice}: ${flow3.unclassified} row(s) with an unrecognised status (counted as Pending)`);\nif (flow4.unclassified) issues.push(`${cfg.tabs.fieldfolio}: ${flow4.unclassified} row(s) with an unrecognised status (counted as Active)`);\nif (rejectedAccounts.length) issues.push(`${rejectedAccounts.length} converted row(s) had an account number that is not a valid account code and were left out of the revenue query: ${[...new Set(rejectedAccounts)].slice(0, 5).join(', ')}`);\nconst missingAccountNo = convertedRecords.filter((r) => !r.accountNo).length;\nif (missingAccountNo) issues.push(`${missingAccountNo} converted row(s) have no AccountNo, so no revenue can be attributed to them`);\n\nreturn [{\n  json: {\n    config: cfg,\n    revenueQuery,\n    revenueAccountCount: uniqueAccounts.length,\n    convertedRecords,\n    uniqueContactedAccounts: seenAccounts.size,\n    flows: { flow1, flow2, flow3, flow4 },\n    history,\n    sources,\n    issues,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        290
+      ],
+      "id": "28ef340e-a384-5534-9516-f1439ea1a5bb",
+      "name": "Normalise Tracker Rows"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.revenueQuery }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.microsoftSql",
+      "typeVersion": 1.1,
+      "position": [
+        1020,
+        290
+      ],
+      "id": "43c867da-fa65-55d3-bc7a-d458ecf5200b",
+      "name": "Fetch Revenue (E-Suite)",
+      "credentials": {
+        "microsoftSql": {
+          "id": "REPLACE_ESUITE_SQL_CREDENTIAL_ID",
+          "name": "e-suite-readonly"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// AGGREGATE & CALCULATE\n// ------------------------------------------------------------\n// Joins the E-Suite transactions onto the customers who converted this\n// week and produces the numbers the email renders.\n//\n// Two rules do the real work here:\n//\n//  1. ONE TRANSACTION, ONE FLOW. A customer can sit in reactivation and\n//     the sales-cycle nudge at the same time. Attributing the same order\n//     to both inflates the headline. Each transaction row is assigned to\n//     exactly one flow — the one the customer entered first — and the\n//     total is the sum of the assignments, not the sum of the flows.\n//\n//  2. AN ATTRIBUTION WINDOW. An order only counts if it lands between the\n//     customer entering the flow and attributionDays later. Without it,\n//     every order a long-standing customer ever places is credited to a\n//     flow they were enrolled in months ago.\n// ============================================================\n\nconst base = $('Normalise Tracker Rows').first().json;\nconst cfg = base.config;\nconst flows = base.flows;\nconst winStart = new Date(cfg.window.startIso).getTime();\nconst winEnd = new Date(cfg.window.endExclusiveIso).getTime();\nconst attributionMs = cfg.revenue.attributionDays * 86400000;\n\nconst issues = [...base.issues];\n\n// ---- revenue rows ------------------------------------------------------\n// The SQL node runs with continueRegularOutput, so a database outage arrives\n// as an error item rather than an exception. Reporting $0 in that case would\n// read as a bad week; it has to read as \"we do not know\".\nlet revenueAvailable = true;\nlet revenueError = null;\nconst txRows = [];\n\nfor (const item of $input.all()) {\n  const j = (item && item.json) || {};\n  if (j.error) {\n    revenueAvailable = false;\n    revenueError = String(j.error.message || j.error);\n    continue;\n  }\n  if (j.BillAccountNo == null && j.Revenue == null) continue; // no-op query row\n  const when = j.TransDate ? new Date(j.TransDate) : null;\n  txRows.push({\n    account: String(j.BillAccountNo == null ? '' : j.BillAccountNo).trim(),\n    at: when && !Number.isNaN(when.getTime()) ? when.getTime() : null,\n    amount: Number(j.Revenue) || 0,\n  });\n}\n\nif (!revenueAvailable) {\n  issues.push(`E-Suite revenue could not be read (${revenueError}). Revenue figures below are unavailable, not zero.`);\n}\n\n// ---- claims: which flow may attribute which account, and from when -----\n// Earliest entry wins, so a transaction is never counted twice.\nconst claim = new Map(); // account (lowercased) -> { flow, from, until }\nconst flowKeyOf = { reactivation: 'flow1', salesCycle: 'flow2', fieldfolio: 'flow4' };\n\nfor (const rec of base.convertedRecords) {\n  const account = String(rec.accountNo || '').trim().toLowerCase();\n  if (!account) continue;\n  const entered = rec.enteredFlowAt ? new Date(rec.enteredFlowAt).getTime() : winStart;\n  const from = Number.isNaN(entered) ? winStart : entered;\n  const existing = claim.get(account);\n  if (!existing || from < existing.from) {\n    claim.set(account, { flow: rec.flow, from, until: from + attributionMs });\n  }\n}\n\n// ---- attribute -------------------------------------------------------\nconst revenueByFlow = { reactivation: 0, salesCycle: 0, fieldfolio: 0 };\nconst revenueByAccount = new Map();\nlet attributedCount = 0;\nlet outOfWindowCount = 0;\nlet unclaimedCount = 0;\n\nfor (const tx of txRows) {\n  const c = claim.get(tx.account.toLowerCase());\n  if (!c) { unclaimedCount++; continue; }\n  if (tx.at === null) { outOfWindowCount++; continue; }\n  // On or after entering the flow, inside the attribution window, and no\n  // later than the end of the week being reported.\n  if (tx.at < c.from || tx.at > c.until || tx.at >= winEnd) { outOfWindowCount++; continue; }\n\n  revenueByFlow[c.flow] = (revenueByFlow[c.flow] || 0) + tx.amount;\n  revenueByAccount.set(tx.account, (revenueByAccount.get(tx.account) || 0) + tx.amount);\n  attributedCount++;\n}\n\nif (revenueAvailable && txRows.length && attributedCount === 0 && claim.size) {\n  issues.push(\n    `${txRows.length} transaction(s) came back from E-Suite but none fell inside the `\n    + `${cfg.revenue.attributionDays}-day attribution window — check that EnteredFlowAt is populated in the trackers.`,\n  );\n}\n\nflows.flow1.revenue = revenueByFlow.reactivation || 0;\nflows.flow2.revenue = revenueByFlow.salesCycle || 0;\nflows.flow4.revenue = revenueByFlow.fieldfolio || 0;\nflows.flow3.revenue = null; // invoice recovery is recovered debt, not new revenue\n\nconst rate = (num, den) => (den > 0 ? (num / den) * 100 : null);\n\nflows.flow1.conversionRate = rate(flows.flow1.converted, flows.flow1.inFlow);\nflows.flow2.conversionRate = rate(flows.flow2.converted, flows.flow2.inFlow);\nflows.flow3.conversionRate = rate(flows.flow3.resolved, flows.flow3.inFlow);\nflows.flow4.conversionRate = rate(flows.flow4.converted, flows.flow4.inFlow);\n\n// ---- the big three ----------------------------------------------------\n// Contacted counts CUSTOMERS, so a customer worked by two flows in the same\n// week is one person, and invoices — which are documents, not people — are\n// reported separately rather than padding the denominator.\nconst customerFlowTotal = flows.flow1.inFlow + flows.flow2.inFlow + flows.flow4.inFlow;\nconst contactedUnique = base.uniqueContactedAccounts || 0;\nconst contacted = contactedUnique || customerFlowTotal;\nconst overlap = Math.max(0, customerFlowTotal - contacted);\n\nconst converted = flows.flow1.converted + flows.flow2.converted + flows.flow4.converted;\nconst revenue = (revenueByFlow.reactivation || 0)\n  + (revenueByFlow.salesCycle || 0)\n  + (revenueByFlow.fieldfolio || 0);\n\nconst summary = {\n  contacted,\n  contactedAcrossFlows: customerFlowTotal,\n  overlap,\n  converted,\n  revenue,\n  conversionRate: rate(converted, contacted),\n  invoicesInFlow: flows.flow3.inFlow,\n  amountRecovered: flows.flow3.recovered,\n  amountOutstanding: flows.flow3.outstanding,\n  revenueAvailable,\n  revenueError,\n};\n\nif (overlap > 0) {\n  issues.push(`${overlap} customer(s) were worked by more than one flow this week. They are counted once in the headline and once per flow in the sections below.`);\n}\n\n// ---- week on week -----------------------------------------------------\n// The history tab is written at the end of every run, so the previous row\n// is last week's report as it was actually sent.\nconst num = (v) => {\n  if (typeof v === 'number') return v;\n  const n = Number(String(v == null ? '' : v).replace(/[$,%\\s]/g, ''));\n  return Number.isFinite(n) ? n : null;\n};\n\nconst prior = base.history\n  .map((h) => ({ ...h, _start: h.weekStart || h.WeekStart || '' }))\n  .filter((h) => h._start && h._start < cfg.window.startDate)\n  .sort((a, b) => String(a._start).localeCompare(String(b._start)))\n  .pop() || null;\n\nconst delta = (now, before) => {\n  if (before === null || before === undefined || now === null) return null;\n  const b = num(before);\n  if (b === null) return null;\n  return { from: b, change: now - b, pct: b === 0 ? null : ((now - b) / b) * 100 };\n};\n\n// A week where E-Suite was unreachable wrote revenue: 0 to the history tab.\n// Comparing against it would read as a collapse rather than a gap, so the\n// revenue comparison is skipped for those weeks — the counts are still good.\nconst priorRevenueUsable = prior\n  && String(prior.revenueAvailable == null ? 'yes' : prior.revenueAvailable).toLowerCase() !== 'no';\n\nconst wow = prior ? {\n  weekStart: prior._start,\n  contacted: delta(contacted, prior.contacted),\n  converted: delta(converted, prior.converted),\n  revenue: revenueAvailable && priorRevenueUsable ? delta(revenue, prior.revenue) : null,\n  conversionRate: delta(summary.conversionRate, prior.conversionRate),\n} : null;\n\n// ---- top converted accounts (context for the revenue number) ----------\nconst topAccounts = [...revenueByAccount.entries()]\n  .map(([account, amount]) => {\n    const rec = base.convertedRecords.find(\n      (r) => String(r.accountNo).toLowerCase() === account.toLowerCase(),\n    );\n    return {\n      accountNo: account,\n      customer: (rec && rec.customer) || '',\n      flow: (rec && rec.flow) || '',\n      amount,\n    };\n  })\n  .sort((a, b) => b.amount - a.amount)\n  .slice(0, 5);\n\nreturn [{\n  json: {\n    config: cfg,\n    summary,\n    flows,\n    wow,\n    topAccounts,\n    sources: base.sources,\n    issues,\n    diagnostics: {\n      transactionsReturned: txRows.length,\n      transactionsAttributed: attributedCount,\n      transactionsOutsideWindow: outOfWindowCount,\n      transactionsWithoutAClaim: unclaimedCount,\n      convertedAccountsQueried: base.revenueAccountCount,\n      attributionDays: cfg.revenue.attributionDays,\n    },\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        290
+      ],
+      "id": "be35c0ce-1b87-5672-8c7e-d1941f6a4c91",
+      "name": "Aggregate & Calculate"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// RENDER HTML REPORT\n// ------------------------------------------------------------\n// Email-safe HTML: tables for layout, inline styles, no external CSS,\n// no flexbox or grid. Outlook and the Gmail app both strip <style>\n// blocks, so every rule that matters is on the element.\n//\n// The same markup is emailed inline AND attached as a .html file, which\n// prints to PDF from any browser. n8n has no native HTML-to-PDF node —\n// see the disabled \"Render PDF (optional)\" node for the service route.\n// ============================================================\n\nconst d = $input.first().json;\nconst cfg = d.config;\nconst s = d.summary;\nconst f = d.flows;\n\n// ---- formatting --------------------------------------------------------\nconst esc = (v) => String(v == null ? '' : v)\n  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')\n  .replace(/\"/g, '&quot;');\n\nconst int = (n) => (n == null ? '—' : Number(n).toLocaleString('en-AU'));\n\n// amount() always formats. cash() is for E-Suite revenue only, which can be\n// genuinely unknown when the database is unreachable — reporting that as\n// $0.00 would read as a bad week rather than a broken query.\nconst amount = (n) => cfg.currency.symbol + Number(n || 0).toLocaleString('en-AU', {\n  minimumFractionDigits: 2, maximumFractionDigits: 2,\n});\n\nconst cash = (n) => {\n  if (n == null) return '—';\n  if (!s.revenueAvailable) return 'unavailable';\n  return amount(n);\n};\n\nconst pct = (n) => (n == null ? '—' : `${n.toFixed(1)}%`);\n\nconst longDate = (iso) => new Date(iso).toLocaleDateString('en-AU', {\n  timeZone: cfg.timezone, day: 'numeric', month: 'short', year: 'numeric',\n});\n\n// ---- palette (fixed light scheme; email clients have no theme tokens) --\nconst C = {\n  ink: '#12161c',\n  muted: '#5b6572',\n  faint: '#8a94a2',\n  rule: '#e3e7ec',\n  panel: '#f6f8fa',\n  page: '#eef1f4',\n  accent: '#1f6feb',\n  good: '#1a7f4b',\n  bad: '#b4232c',\n  warnBg: '#fff8e6',\n  warnEdge: '#e8c260',\n};\n\nconst FONT = \"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif\";\nconst MONO = \"ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace\";\n\n// ---- building blocks ---------------------------------------------------\nfunction deltaChip(delta, { invert = false, money = false, percent = false } = {}) {\n  if (!delta || delta.change === null || delta.change === undefined) return '';\n  const up = delta.change > 0;\n  const flat = Math.abs(delta.change) < 0.05;\n  const good = invert ? !up : up;\n  const colour = flat ? C.faint : (good ? C.good : C.bad);\n  const arrow = flat ? '=' : (up ? '▲' : '▼');\n  const size = money ? cash(Math.abs(delta.change))\n    : percent ? `${Math.abs(delta.change).toFixed(1)}pp`\n      : int(Math.abs(delta.change));\n  const tail = delta.pct === null ? '' : ` (${Math.abs(delta.pct).toFixed(0)}%)`;\n  return `<div style=\"margin:6px 0 0;font:600 12px/1.4 ${FONT};color:${colour};\">`\n    + `${arrow} ${esc(size)}${esc(tail)} <span style=\"font-weight:400;color:${C.faint};\">vs last week</span></div>`;\n}\n\nfunction heroCell(label, value, delta, opts) {\n  return `<td width=\"33%\" valign=\"top\" style=\"padding:18px 16px;background:#ffffff;border:1px solid ${C.rule};border-radius:10px;\">`\n    + `<div style=\"font:600 11px/1.4 ${FONT};letter-spacing:.09em;text-transform:uppercase;color:${C.faint};\">${esc(label)}</div>`\n    + `<div style=\"margin-top:8px;font:700 30px/1.15 ${FONT};color:${C.ink};\">${value}</div>`\n    + deltaChip(delta, opts)\n    + '</td>';\n}\n\n// One \"├─ Label  value\" line inside a flow card.\nfunction branch(label, value, { last = false, strong = false, note = '' } = {}) {\n  const stem = last ? '└─' : '├─';\n  return '<tr>'\n    + `<td style=\"padding:5px 0;font:${strong ? 600 : 400} 13px/1.5 ${FONT};color:${strong ? C.ink : C.muted};\">`\n    + `<span style=\"font-family:${MONO};color:${C.faint};\">${stem}</span> ${esc(label)}`\n    + (note ? `<span style=\"color:${C.faint};font-size:12px;\"> ${esc(note)}</span>` : '')\n    + '</td>'\n    + `<td align=\"right\" style=\"padding:5px 0;font:${strong ? 700 : 600} 13px/1.5 ${MONO};color:${strong ? C.ink : C.muted};white-space:nowrap;\">${value}</td>`\n    + '</tr>';\n}\n\nfunction headline(label, value) {\n  return '<tr>'\n    + `<td style=\"padding:0 0 10px;font:600 13px/1.5 ${FONT};color:${C.ink};\">${esc(label)}</td>`\n    + `<td align=\"right\" style=\"padding:0 0 10px;font:700 16px/1.5 ${MONO};color:${C.ink};white-space:nowrap;\">${value}</td>`\n    + '</tr>';\n}\n\nfunction footRow(label, value, colour) {\n  return '<tr>'\n    + `<td style=\"padding:9px 0 0;border-top:1px solid ${C.rule};font:600 13px/1.5 ${FONT};color:${C.ink};\">${esc(label)}</td>`\n    + `<td align=\"right\" style=\"padding:9px 0 0;border-top:1px solid ${C.rule};font:700 14px/1.5 ${MONO};color:${colour || C.ink};white-space:nowrap;\">${value}</td>`\n    + '</tr>';\n}\n\nfunction card(index, title, rowsHtml) {\n  return '<tr><td style=\"padding:0 0 14px;\">'\n    + `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"background:#ffffff;border:1px solid ${C.rule};border-radius:10px;\">`\n    + '<tr><td style=\"padding:18px 20px 16px;\">'\n    + `<div style=\"font:600 11px/1.4 ${FONT};letter-spacing:.09em;text-transform:uppercase;color:${C.accent};\">Flow ${index}</div>`\n    + `<div style=\"margin:4px 0 14px;font:700 17px/1.3 ${FONT};color:${C.ink};\">${esc(title)}</div>`\n    + '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\">'\n    + rowsHtml\n    + '</table></td></tr></table></td></tr>';\n}\n\n// ---- flow 1 ------------------------------------------------------------\nconst flow1Rows = headline(`Customers in flow this week`, int(f.flow1.inFlow))\n  + branch('Step 1 (Email 1)', int(f.flow1.step1))\n  + branch('Step 2 (Email 2)', int(f.flow1.step2))\n  + branch('Step 3 (Email 3)', int(f.flow1.step3))\n  + branch('Converted', int(f.flow1.converted), { strong: true })\n  + branch('Unresponsive', int(f.flow1.unresponsive), { last: true })\n  + footRow('Conversion rate', pct(f.flow1.conversionRate))\n  + footRow('Revenue from converted', cash(f.flow1.revenue), C.good)\n  + footRow('Still open (all weeks)', int(f.flow1.openPipeline), C.muted);\n\n// ---- flow 2 ------------------------------------------------------------\nconst flow2Rows = headline('Customers in flow this week', int(f.flow2.inFlow))\n  + branch('Tier A', int(f.flow2.tierA))\n  + branch('Tier B', int(f.flow2.tierB))\n  + branch('Tier C', int(f.flow2.tierC), { last: !f.flow2.tierUnknown })\n  + (f.flow2.tierUnknown ? branch('Tier not recorded', int(f.flow2.tierUnknown), { last: true }) : '')\n  + '<tr><td colspan=\"2\" style=\"height:10px;line-height:10px;\">&nbsp;</td></tr>'\n  + branch('In progress', int(f.flow2.inProgress))\n  + branch('Converted', int(f.flow2.converted), { strong: true })\n  + branch('Unresponsive', int(f.flow2.unresponsive), { last: true })\n  + footRow('Conversion rate', pct(f.flow2.conversionRate))\n  + footRow('Revenue from converted', cash(f.flow2.revenue), C.good)\n  + footRow('Still open (all weeks)', int(f.flow2.openPipeline), C.muted);\n\n// ---- flow 3 ------------------------------------------------------------\nconst flow3Rows = headline('Invoices in flow this week', int(f.flow3.inFlow))\n  + branch('Pending', int(f.flow3.pending))\n  + branch('Resolved (paid)', int(f.flow3.resolved), { strong: true })\n  + branch('Escalated', int(f.flow3.escalated), { last: true })\n  + footRow('Amount recovered', amount(f.flow3.recovered), C.good)\n  + footRow('Amount outstanding', amount(f.flow3.outstanding), C.bad)\n  + footRow('Resolution rate', pct(f.flow3.conversionRate), C.muted)\n  + footRow('Still unpaid (all weeks)', int(f.flow3.openPipeline), C.muted);\n\n// ---- flow 4 ------------------------------------------------------------\nconst flow4Rows = headline('Recovery emails sent this week', int(f.flow4.inFlow))\n  + branch('Active', int(f.flow4.active))\n  + branch('Converted', int(f.flow4.converted), { strong: true, last: true })\n  + footRow('Conversion rate', pct(f.flow4.conversionRate))\n  + footRow('Revenue from converted', cash(f.flow4.revenue), C.good)\n  + footRow('Still open (all weeks)', int(f.flow4.openPipeline), C.muted);\n\n// ---- optional blocks ---------------------------------------------------\nconst topAccountsBlock = d.topAccounts.length\n  ? '<tr><td style=\"padding:0 0 14px;\">'\n    + `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"background:#ffffff;border:1px solid ${C.rule};border-radius:10px;\">`\n    + '<tr><td style=\"padding:18px 20px;\">'\n    + `<div style=\"font:700 15px/1.3 ${FONT};color:${C.ink};margin-bottom:12px;\">Where the revenue came from</div>`\n    + '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\">'\n    + d.topAccounts.map((a) => '<tr>'\n      + `<td style=\"padding:5px 0;font:400 13px/1.5 ${FONT};color:${C.muted};\">${esc(a.customer || a.accountNo)}`\n      + `<span style=\"color:${C.faint};font-size:12px;\"> · ${esc(a.accountNo)}</span></td>`\n      + `<td align=\"right\" style=\"padding:5px 0;font:600 13px/1.5 ${MONO};color:${C.ink};white-space:nowrap;\">${cash(a.amount)}</td>`\n      + '</tr>').join('')\n    + '</table></td></tr></table></td></tr>'\n  : '';\n\nconst issuesBlock = d.issues.length\n  ? '<tr><td style=\"padding:0 0 14px;\">'\n    + `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"background:${C.warnBg};border:1px solid ${C.warnEdge};border-radius:10px;\">`\n    + '<tr><td style=\"padding:16px 20px;\">'\n    + `<div style=\"font:700 13px/1.4 ${FONT};color:#7a5a00;margin-bottom:8px;\">Read these numbers with care</div>`\n    + `<div style=\"font:400 13px/1.7 ${FONT};color:#6b5200;\">`\n    + d.issues.map((i) => `• ${esc(i)}`).join('<br>')\n    + '</div></td></tr></table></td></tr>'\n  : '';\n\nconst sourceRows = d.sources.map((src) => '<tr>'\n  + `<td style=\"padding:3px 0;font:400 12px/1.6 ${FONT};color:${C.faint};\">${esc(src.tab)}</td>`\n  + `<td align=\"right\" style=\"padding:3px 0;font:400 12px/1.6 ${MONO};color:${src.ok ? C.faint : C.bad};\">`\n  + (src.ok ? `${int(src.rowCount)} rows` : 'not read')\n  + '</td></tr>').join('');\n\n// ---- page --------------------------------------------------------------\nconst rangeLabel = `${longDate(cfg.window.startIso)} — ${longDate(cfg.window.endInclusiveIso)}`;\n\nconst html = `<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"background:${C.page};margin:0;padding:0;\">\n<tr><td align=\"center\" style=\"padding:24px 12px;\">\n<table role=\"presentation\" width=\"640\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"width:640px;max-width:100%;\">\n\n  <tr><td style=\"padding:0 0 20px;\">\n    <div style=\"font:700 11px/1.4 ${FONT};letter-spacing:.14em;text-transform:uppercase;color:${C.accent};\">J Elliot</div>\n    <div style=\"margin:6px 0 2px;font:700 25px/1.25 ${FONT};color:${C.ink};\">Weekly Campaign Report</div>\n    <div style=\"font:400 14px/1.5 ${FONT};color:${C.muted};\">Week of ${esc(rangeLabel)}</div>\n    ${cfg.isBackfill ? `<div style=\"margin-top:6px;font:600 12px/1.5 ${FONT};color:${C.bad};\">Backfilled run — generated ${esc(longDate(cfg.generatedAt))}, not on the usual Monday schedule.</div>` : ''}\n  </td></tr>\n\n  ${issuesBlock}\n\n  <tr><td style=\"padding:0 0 6px;\">\n    <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"border-collapse:separate;border-spacing:8px 0;margin:0 -8px;\">\n      <tr>\n        ${heroCell('Customers contacted', int(s.contacted), d.wow && d.wow.contacted)}\n        ${heroCell('Converted', int(s.converted), d.wow && d.wow.converted)}\n        ${heroCell('Revenue', cash(s.revenue), d.wow && d.wow.revenue, { money: true })}\n      </tr>\n    </table>\n  </td></tr>\n\n  <tr><td style=\"padding:8px 0 20px;\">\n    <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"background:#ffffff;border:1px solid ${C.rule};border-radius:10px;\">\n      <tr><td style=\"padding:14px 20px;\">\n        <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\">\n          <tr>\n            <td style=\"font:400 13px/1.5 ${FONT};color:${C.muted};\">Overall conversion rate</td>\n            <td align=\"right\" style=\"font:700 15px/1.5 ${MONO};color:${C.ink};\">${pct(s.conversionRate)}</td>\n          </tr>\n          <tr>\n            <td style=\"padding-top:6px;font:400 13px/1.5 ${FONT};color:${C.muted};\">Invoice debt recovered <span style=\"color:${C.faint};font-size:12px;\">(not counted as revenue)</span></td>\n            <td align=\"right\" style=\"padding-top:6px;font:600 14px/1.5 ${MONO};color:${C.ink};\">${amount(s.amountRecovered)}</td>\n          </tr>\n        </table>\n      </td></tr>\n    </table>\n  </td></tr>\n\n  ${card(1, 'Inactive Reactivation', flow1Rows)}\n  ${card(2, 'Sales Cycle Nudge', flow2Rows)}\n  ${card(3, 'Invoice Reminders', flow3Rows)}\n  ${card(4, 'Fieldfolio Draft Orders', flow4Rows)}\n\n  ${topAccountsBlock}\n\n  <tr><td style=\"padding:8px 0 0;border-top:1px solid ${C.rule};\">\n    <div style=\"font:600 11px/1.4 ${FONT};letter-spacing:.09em;text-transform:uppercase;color:${C.faint};margin:14px 0 8px;\">How these numbers are built</div>\n    <div style=\"font:400 12px/1.7 ${FONT};color:${C.faint};\">\n      <b>Week</b> — Monday 00:00 to Sunday 23:59, ${esc(cfg.timezone)}. A row counts if the flow entered, contacted, converted or resolved it inside that window.<br>\n      <b>Customers contacted</b> — unique customers across flows 1, 2 and 4${s.overlap ? `; ${int(s.overlap)} were worked by more than one flow and are counted once` : ''}. Invoices are documents, not customers, so flow 3 is reported on its own.<br>\n      <b>Converted</b> — flows 1, 2 and 4. Invoices being paid is debt recovery and is reported separately.<br>\n      <b>Revenue</b> — E-Suite ${esc(cfg.revenue.transType)} transactions for converted customers, dated on or after they entered the flow and within ${int(cfg.revenue.attributionDays)} days of it. Each order is credited to one flow only.<br>\n      <b>Sources</b>\n    </div>\n    <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"margin-top:4px;\">${sourceRows}</table>\n    <div style=\"margin-top:12px;font:400 12px/1.6 ${FONT};color:${C.faint};\">\n      Generated ${esc(new Date(cfg.generatedAt).toLocaleString('en-AU', { timeZone: cfg.timezone }))} ·\n      ${int(d.diagnostics.transactionsAttributed)}/${int(d.diagnostics.transactionsReturned)} E-Suite transactions attributed ·\n      ${int(d.diagnostics.convertedAccountsQueried)} converted account(s) queried\n    </div>\n  </td></tr>\n\n</table>\n</td></tr>\n</table>`;\n\nconst page = `<!doctype html><html><head><meta charset=\"utf-8\">`\n  + `<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">`\n  + `<title>J Elliot Weekly Campaign Report — ${esc(cfg.window.startDate)}</title>`\n  + `</head><body style=\"margin:0;padding:0;background:${C.page};\">${html}</body></html>`;\n\nconst subject = `J Elliot weekly campaign report — ${longDate(cfg.window.startIso)} to ${longDate(cfg.window.endInclusiveIso)}`\n  + ` · ${s.converted} converted, ${s.revenueAvailable ? cash(s.revenue) : 'revenue unavailable'}`;\n\n// Plain-text fallback for clients that refuse HTML.\nconst plain = [\n  'J ELLIOT WEEKLY CAMPAIGN REPORT',\n  `Week of ${rangeLabel}`,\n  '',\n  `Customers contacted:  ${int(s.contacted)}`,\n  `Converted:            ${int(s.converted)}`,\n  `Revenue:              ${cash(s.revenue)}`,\n  `Conversion rate:      ${pct(s.conversionRate)}`,\n  `Invoice recovered:    ${amount(s.amountRecovered)}`,\n  '',\n  `Flow 1 Inactive Reactivation:   ${int(f.flow1.inFlow)} in flow, ${int(f.flow1.converted)} converted, ${cash(f.flow1.revenue)}`,\n  `Flow 2 Sales Cycle Nudge:       ${int(f.flow2.inFlow)} in flow, ${int(f.flow2.converted)} converted, ${cash(f.flow2.revenue)}`,\n  `Flow 3 Invoice Reminders:       ${int(f.flow3.inFlow)} invoices, ${int(f.flow3.resolved)} resolved`,\n  `Flow 4 Fieldfolio Draft Orders: ${int(f.flow4.inFlow)} sent, ${int(f.flow4.converted)} converted, ${cash(f.flow4.revenue)}`,\n  d.issues.length ? `\\nRead with care:\\n${d.issues.map((i) => `- ${i}`).join('\\n')}` : '',\n].join('\\n');\n\n// Flat row for the history tab — this is what next week diffs against.\nconst historyRow = {\n  weekStart: cfg.window.startDate,\n  weekEnd: cfg.window.endDate,\n  contacted: s.contacted,\n  converted: s.converted,\n  revenue: Number(s.revenue.toFixed(2)),\n  conversionRate: s.conversionRate === null ? '' : Number(s.conversionRate.toFixed(2)),\n  reactivationInFlow: f.flow1.inFlow,\n  reactivationConverted: f.flow1.converted,\n  reactivationRevenue: Number(f.flow1.revenue.toFixed(2)),\n  salesCycleInFlow: f.flow2.inFlow,\n  salesCycleConverted: f.flow2.converted,\n  salesCycleRevenue: Number(f.flow2.revenue.toFixed(2)),\n  invoicesInFlow: f.flow3.inFlow,\n  invoicesResolved: f.flow3.resolved,\n  amountRecovered: Number(f.flow3.recovered.toFixed(2)),\n  amountOutstanding: Number(f.flow3.outstanding.toFixed(2)),\n  fieldfolioInFlow: f.flow4.inFlow,\n  fieldfolioConverted: f.flow4.converted,\n  fieldfolioRevenue: Number(f.flow4.revenue.toFixed(2)),\n  revenueAvailable: s.revenueAvailable ? 'yes' : 'no',\n  issues: d.issues.length,\n  generatedAt: cfg.generatedAt,\n};\n\nreturn [{\n  json: {\n    subject,\n    html: page,\n    plain,\n    recipients: cfg.recipients,\n    fileName: `j-elliot-weekly-report-${cfg.window.startDate}.html`,\n    historyRow,\n    summary: s,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        290
+      ],
+      "id": "5350a15a-702b-5f1f-b44d-cd7e770a431c",
+      "name": "Render HTML Report"
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "html",
+        "options": {
+          "encoding": "utf8",
+          "fileName": "={{ $json.fileName }}",
+          "mimeType": "text/html"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        290
+      ],
+      "id": "5555234f-f537-5af5-acbb-7cf5d88ae5ee",
+      "name": "Report to HTML File"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://gotenberg:3000/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "index.html",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "marginTop",
+              "value": "0.4"
+            },
+            {
+              "name": "marginBottom",
+              "value": "0.4"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        290
+      ],
+      "id": "c0133bb7-8526-5162-addf-f4e04b93d439",
+      "name": "Render PDF (optional)",
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Render HTML Report').first().json.recipients }}",
+        "subject": "={{ $('Render HTML Report').first().json.subject }}",
+        "emailType": "html",
+        "message": "={{ $('Render HTML Report').first().json.html }}",
+        "options": {
+          "appendAttribution": false,
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2120,
+        290
+      ],
+      "id": "f54b94c8-a49c-5e27-92eb-b9b61ce3a1be",
+      "name": "Email Weekly Report",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ATslW0x5iOr4fkg1",
+          "name": "j-elliot-draft-orders"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "webhookId": "4f3e1d62-f9cb-5462-97a8-3c107540ca29"
+    },
+    {
+      "parameters": {
+        "jsCode": "// The email is out; everything after this point is bookkeeping.\n// This row is what NEXT week's report diffs against, so it is written\n// after the send — a failure here costs the comparison, not the report.\nreturn [{ json: $('Render HTML Report').first().json.historyRow }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2340,
+        290
+      ],
+      "id": "b99c9fc1-7e34-54e3-b7c4-7bf151f590ca",
+      "name": "Build History Row"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Report Config').first().json.spreadsheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Report Config').first().json.tabs.history }}"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2560,
+        290
+      ],
+      "id": "8d38abd0-6803-5f40-afa3-d50ab7281da1",
+      "name": "Append Report History",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "j-elliot-trackers"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        660
+      ],
+      "id": "29d0af56-4cb4-5229-a8f6-31435a3e499b",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "sendTo": "tanay@zerobusy.com",
+        "subject": "=[ERROR] {{ $json.workflow.name }} failed — {{ $now.format('dd-MM-yyyy') }}",
+        "emailType": "text",
+        "message": "={{ $json.workflow.name }} failed, so no weekly report was sent.\\nLast node executed: {{ $json.execution.lastNodeExecuted }}\\nError: {{ $json.execution.error?.message }}\\nExecution: {{ $json.execution.url }}\\n",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -520,
+        660
+      ],
+      "id": "1d9faf42-b0f0-5cac-b8cb-b605df7a1086",
+      "name": "Alert on Failure",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ATslW0x5iOr4fkg1",
+          "name": "j-elliot-draft-orders"
+        }
+      },
+      "webhookId": "60ddb95a-4eab-5e63-a2f4-fb1699400e93"
+    },
+    {
+      "parameters": {
+        "content": "## Before the first run\n\n**1. Credentials** — three nodes ship with placeholder credential ids:\n- the five *Fetch … Tracker/History* nodes and *Append Report History* → Google Sheets OAuth2\n- *Fetch Revenue (E-Suite)* → the E-Suite SQL credential\n- the two Gmail nodes already point at `j-elliot-draft-orders`\n\n**2. Tab names** — open **Report Config** and check `TABS` matches the tabs in the spreadsheet. Everything else reads from there.\n\n**3. Error alerts** — Settings → Error Workflow → this workflow, otherwise the Error Trigger below never fires.\n\n**4. Timezone** — Settings → Timezone is `Australia/Sydney`. That means 8am *local* all year. For 8am AEST all year (7am Sydney in summer) use `Australia/Brisbane` here **and** in Report Config.",
+        "height": 330,
+        "width": 520,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -780,
+        -160
+      ],
+      "id": "f0c0f11c-f462-5642-ad78-742e0c3b7c1a",
+      "name": "Note Setup"
+    },
+    {
+      "parameters": {
+        "content": "## Fetch (sequential, not parallel)\n\nThese run one after another on purpose. n8n's v1 execution order runs branches one at a time anyway, so a parallel fan-out buys nothing — and five branches into one Code node would need a Merge, or would run the aggregator five times.\n\nEvery read is `alwaysOutputData` + `continueRegularOutput`: a renamed tab or a Google outage degrades one section of the report and shows up in the *Read these numbers with care* banner, instead of killing the whole run.",
+        "height": 200,
+        "width": 900,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -160
+      ],
+      "id": "5d3bb029-052a-5821-9e39-c966e29e341f",
+      "name": "Note Sources"
+    },
+    {
+      "parameters": {
+        "content": "## Revenue\n\n**Normalise** builds the SQL and **Fetch Revenue** executes it. The account list is whitelist-validated (`^[A-Za-z0-9._-]{1,32}$`) before it is put in the `IN()` clause, and a week with no conversions sends a `SELECT TOP 0` no-op rather than the `IN ()` syntax error.\n\n**Aggregate** applies the two attribution rules: an order counts only within `attributionDays` of the customer entering the flow, and each order is credited to exactly one flow (earliest entry wins) so the headline is not double-counted.",
+        "height": 200,
+        "width": 660,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        800,
+        -160
+      ],
+      "id": "5173b9a2-d17b-557e-b41f-68e42f89bc95",
+      "name": "Note Revenue"
+    },
+    {
+      "parameters": {
+        "content": "## Delivery\n\nn8n has no native HTML-to-PDF node. The report is sent as **inline HTML** (the thing that actually renders on a phone at 8am) with the same HTML **attached as a file** — open it in a browser and Print → Save as PDF.\n\n*Render PDF (optional)* is disabled and passes data straight through. Enable it only if you run Gotenberg / Browserless / PDFShift; point the URL at it and the PDF replaces the HTML attachment. Note that if you enable it, the Gmail node still reads its subject and body from *Render HTML Report* by name, so nothing else changes.",
+        "height": 200,
+        "width": 900,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        -160
+      ],
+      "id": "f010e4e2-c977-5491-942f-3e3044a8d0da",
+      "name": "Note Delivery"
+    }
+  ],
+  "connections": {
+    "Report Config": {
+      "main": [
+        [
+          {
+            "node": "Fetch Reactivation Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Reactivation Tracker": {
+      "main": [
+        [
+          {
+            "node": "Fetch Sales Cycle Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Sales Cycle Tracker": {
+      "main": [
+        [
+          {
+            "node": "Fetch Invoice Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Invoice Tracker": {
+      "main": [
+        [
+          {
+            "node": "Fetch Fieldfolio Tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Fieldfolio Tracker": {
+      "main": [
+        [
+          {
+            "node": "Fetch Report History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Report History": {
+      "main": [
+        [
+          {
+            "node": "Normalise Tracker Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Tracker Rows": {
+      "main": [
+        [
+          {
+            "node": "Fetch Revenue (E-Suite)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Revenue (E-Suite)": {
+      "main": [
+        [
+          {
+            "node": "Aggregate & Calculate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate & Calculate": {
+      "main": [
+        [
+          {
+            "node": "Render HTML Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render HTML Report": {
+      "main": [
+        [
+          {
+            "node": "Report to HTML File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report to HTML File": {
+      "main": [
+        [
+          {
+            "node": "Render PDF (optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render PDF (optional)": {
+      "main": [
+        [
+          {
+            "node": "Email Weekly Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Weekly Report": {
+      "main": [
+        [
+          {
+            "node": "Build History Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build History Row": {
+      "main": [
+        [
+          {
+            "node": "Append Report History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Monday 8am": {
+      "main": [
+        [
+          {
+            "node": "Report Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Manually / Backfill": {
+      "main": [
+        [
+          {
+            "node": "Report Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Alert on Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Australia/Sydney",
+    "saveManualExecutions": true,
+    "availableInMCP": false
+  },
+  "versionId": "ce570dc2-c34e-5b36-bedb-744b5a6f5e04",
+  "meta": {
+    "instanceId": "8a799f928ce276f57341b8cb2463485c1da4f533435604fce67c56880814909c"
+  },
+  "nodeGroups": [],
+  "id": "wRk7WeeklyRpt01",
+  "tags": []
+}
