@@ -1,0 +1,13 @@
+[
+  {
+    "json": {
+      "weekStart": "2026-08-24",
+      "weekEnd": "2026-08-30",
+      "contacted": 118,
+      "converted": 15,
+      "revenue": 9800,
+      "conversionRate": 12.71,
+      "revenueAvailable": "yes"
+    }
+  }
+]

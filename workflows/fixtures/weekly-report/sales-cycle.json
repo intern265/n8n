@@ -1,0 +1,734 @@
+[
+  {
+    "json": {
+      "AccountNo": "SC200",
+      "Company": "Sales Cycle Customer 1",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC201",
+      "Company": "Sales Cycle Customer 2",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC202",
+      "Company": "Sales Cycle Customer 3",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC203",
+      "Company": "Sales Cycle Customer 4",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC204",
+      "Company": "Sales Cycle Customer 5",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC205",
+      "Company": "Sales Cycle Customer 6",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC206",
+      "Company": "Sales Cycle Customer 7",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC207",
+      "Company": "Sales Cycle Customer 8",
+      "Tier": "Tier A",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC208",
+      "Company": "Sales Cycle Customer 9",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC209",
+      "Company": "Sales Cycle Customer 10",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC210",
+      "Company": "Sales Cycle Customer 11",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC211",
+      "Company": "Sales Cycle Customer 12",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC212",
+      "Company": "Sales Cycle Customer 13",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC213",
+      "Company": "Sales Cycle Customer 14",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC214",
+      "Company": "Sales Cycle Customer 15",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC215",
+      "Company": "Sales Cycle Customer 16",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC216",
+      "Company": "Sales Cycle Customer 17",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC217",
+      "Company": "Sales Cycle Customer 18",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC218",
+      "Company": "Sales Cycle Customer 19",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC219",
+      "Company": "Sales Cycle Customer 20",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC220",
+      "Company": "Sales Cycle Customer 21",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC221",
+      "Company": "Sales Cycle Customer 22",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC222",
+      "Company": "Sales Cycle Customer 23",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC223",
+      "Company": "Sales Cycle Customer 24",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC224",
+      "Company": "Sales Cycle Customer 25",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC225",
+      "Company": "Sales Cycle Customer 26",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC226",
+      "Company": "Sales Cycle Customer 27",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC227",
+      "Company": "Sales Cycle Customer 28",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC228",
+      "Company": "Sales Cycle Customer 29",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC229",
+      "Company": "Sales Cycle Customer 30",
+      "Tier": "Tier B",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC230",
+      "Company": "Sales Cycle Customer 31",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC231",
+      "Company": "Sales Cycle Customer 32",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC232",
+      "Company": "Sales Cycle Customer 33",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC233",
+      "Company": "Sales Cycle Customer 34",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC234",
+      "Company": "Sales Cycle Customer 35",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC235",
+      "Company": "Sales Cycle Customer 36",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC236",
+      "Company": "Sales Cycle Customer 37",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC237",
+      "Company": "Sales Cycle Customer 38",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC238",
+      "Company": "Sales Cycle Customer 39",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC239",
+      "Company": "Sales Cycle Customer 40",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC240",
+      "Company": "Sales Cycle Customer 41",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC241",
+      "Company": "Sales Cycle Customer 42",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC242",
+      "Company": "Sales Cycle Customer 43",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC243",
+      "Company": "Sales Cycle Customer 44",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC244",
+      "Company": "Sales Cycle Customer 45",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC245",
+      "Company": "Sales Cycle Customer 46",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC246",
+      "Company": "Sales Cycle Customer 47",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC247",
+      "Company": "Sales Cycle Customer 48",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC248",
+      "Company": "Sales Cycle Customer 49",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC249",
+      "Company": "Sales Cycle Customer 50",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC250",
+      "Company": "Sales Cycle Customer 51",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC251",
+      "Company": "Sales Cycle Customer 52",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC252",
+      "Company": "Sales Cycle Customer 53",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC253",
+      "Company": "Sales Cycle Customer 54",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC254",
+      "Company": "Sales Cycle Customer 55",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC255",
+      "Company": "Sales Cycle Customer 56",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC256",
+      "Company": "Sales Cycle Customer 57",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC257",
+      "Company": "Sales Cycle Customer 58",
+      "Tier": "Tier C",
+      "Status": "In Progress",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC258",
+      "Company": "Sales Cycle Customer 59",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC259",
+      "Company": "Sales Cycle Customer 60",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC260",
+      "Company": "Sales Cycle Customer 61",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC261",
+      "Company": "Sales Cycle Customer 62",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC262",
+      "Company": "Sales Cycle Customer 63",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC263",
+      "Company": "Sales Cycle Customer 64",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC264",
+      "Company": "Sales Cycle Customer 65",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC265",
+      "Company": "Sales Cycle Customer 66",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC266",
+      "Company": "Sales Cycle Customer 67",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC267",
+      "Company": "Sales Cycle Customer 68",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC268",
+      "Company": "Sales Cycle Customer 69",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC269",
+      "Company": "Sales Cycle Customer 70",
+      "Tier": "Tier C",
+      "Status": "Converted",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02",
+      "Converted At": "2026-09-04"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC270",
+      "Company": "Sales Cycle Customer 71",
+      "Tier": "Tier C",
+      "Status": "Unresponsive",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  },
+  {
+    "json": {
+      "AccountNo": "SC271",
+      "Company": "Sales Cycle Customer 72",
+      "Tier": "Tier C",
+      "Status": "Unresponsive",
+      "Entered Flow At": "2026-08-31",
+      "Last Contacted At": "2026-09-02"
+    }
+  }
+]
